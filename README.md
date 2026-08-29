@@ -63,14 +63,16 @@ python3 scripts/review_classifications.py --db-path data/stock_radar.db3
 - `scripts/score_disclosures.py`: DB内の全開示をスコアリング（再実行時は対象weight_setの既存スコアを削除してから再投入、安全に再実行可能）。
 - `scripts/review_scores.py`: 開示タイトルと材料/需給/テーマ/合計スコア・ランクを並べて表示する手動レビュー用CLI。
 
-**要実施**: Phase 2/3で収集・分類済みの実データに対してスコアリングを実行し、4銘柄でスコアが期待レンジ内に収まるか確認してください（仕様書§12 Phase 4の完了条件）。
+**実データでの手動確認は実施済み**（仕様書§12 Phase 4の完了条件）。実際の4銘柄・80件でスコアリングした結果、S/Aランクはほぼ出ず、Bランクも1件のみとなった。原因を`--show-volume-ratio`で調査したところ、バグではなく設計通りの挙動と判明:
+- 実際のTOB開示（7743）で`volume_ratio=0.73`（平常並み）を確認 — 大引け後開示の場合、「開示日の確定出来高」（仕様書§6.2の定義通り）は開示**前**の出来高であり、開示への市場反応を捉える指標ではない
+- テーマスコアは既知のギャップにより実質常時0点
+
+この2点により実質的な到達点が下がり、S/Aがほぼ出ないのは想定内という結論に至った。**ユーザーの判断で閾値の調整は行わず、現状の仮説のまま維持**し、Phase 6のバックテストで実際に検証する方針とした（詳細は`scoring/rank.py`のREAL-DATA FINDING参照）。
 
 ```bash
 python3 scripts/score_disclosures.py --db-path data/stock_radar.db3
-python3 scripts/review_scores.py --db-path data/stock_radar.db3 --min-rank B
+python3 scripts/review_scores.py --db-path data/stock_radar.db3 --show-volume-ratio
 ```
-
-出力された各開示のスコア内訳を見て、明らかにおかしい値（例: 好材料なのに需給がゼロで極端に低い、逆に無関係な開示が高スコアになっている等）があれば教えてください。テーマスコアは上記の理由でほぼ全件0になる見込みです（想定通り）。
 
 ### セットアップ
 
