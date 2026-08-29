@@ -11,7 +11,7 @@ import pytest
 from stock_radar.collectors.tdnet import JST, TDnetClient, TDnetClientError
 
 DISCLOSED_AT = datetime(2026, 8, 20, 15, 0, 0, tzinfo=JST)
-DISCLOSED_AT_RFC2822 = "Thu, 20 Aug 2026 15:00:00 +0900"
+DISCLOSED_AT_PUBDATE = "2026-08-20 15:00:00"  # real API format: 'YYYY-MM-DD HH:MM:SS', implicitly JST
 
 
 class FakeResponse:
@@ -62,7 +62,7 @@ def _counter():
     return _next
 
 
-def _sample_payload(company_code="72030", pubdate=DISCLOSED_AT_RFC2822):
+def _sample_payload(company_code="72030", pubdate=DISCLOSED_AT_PUBDATE):
     return {
         "items": [
             {
@@ -147,6 +147,37 @@ def test_pdf_url_and_company_name_passthrough():
     d = disclosures[0]
     assert d.pdf_url == "https://example.invalid/disclosure.pdf"
     assert d.company_name == "テスト株式会社"
+
+
+def test_parses_real_world_sample_response():
+    """Regression test pinned to an actual live response captured during
+    Phase 2 development (ticker 7203, 2026-08-29) — guards against
+    reverting to the earlier wrong pubdate format assumption."""
+    payload = {
+        "total_count": 1,
+        "condition_desc": "7203の適時開示情報一覧",
+        "items": [
+            {
+                "Tdnet": {
+                    "id": "1272885",
+                    "pubdate": "2026-08-07 15:30:00",
+                    "company_code": "72030",
+                    "company_name": "トヨタ自",
+                    "title": "従業員に対する株式交付制度としての自己株式の処分の処分価額等の決定に関するお知らせ",
+                    "document_url": "https://webapi.yanoshin.jp/rd.php?https://www.release.tdnet.info/inbs/140120260807514302.pdf",
+                    "markets_string": "東名",
+                }
+            }
+        ],
+        "actions": ["7203"],
+    }
+    client = _make_client(payload, datetime(2026, 8, 7, 15, 30, 5, tzinfo=JST))
+    disclosures = client.fetch_by_ticker("7203", limit=1)
+    d = disclosures[0]
+    assert d.ticker == "7203"
+    assert d.company_name == "トヨタ自"
+    assert d.disclosed_at == "2026-08-07T15:30:00+09:00"
+    assert d.availability_confidence == "HIGH"
 
 
 def test_fetch_raw_by_ticker_returns_unparsed_payload():

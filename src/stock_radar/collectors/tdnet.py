@@ -3,19 +3,19 @@
 RISK / UNCERTAINTY NOTICE (do not remove — spec's 補足 flags this as
 "要確認... 実装着手時に再確認必須"):
   This client talks to an UNOFFICIAL, personally-run JSON API that mirrors
-  TDnet (the class of service the spec calls "個人運営の非公式TDnet API",
-  e.g. the やのしん氏-style API at webapi.yanoshin.jp). It is NOT the
-  official JPX/TDnet service. Before relying on this in a real run:
+  TDnet ("TDnet WEB-API（非公式）by Yanoshin", webapi.yanoshin.jp — the
+  class of service the spec calls "個人運営の非公式TDnet API"). It is NOT
+  the official JPX/TDnet service. Before relying on this in a real run:
     1. Verify the service is still online and its terms still allow this
        use (personal, non-commercial, considerate request volume).
-    2. Verify the response JSON shape against a live call — the parsing
-       below (_parse_record) is written against the publicly documented
-       shape as of spec authoring time and has NOT been verified live in
-       this sandbox (outbound network access to this host is blocked
-       here; see scripts/tdnet_connectivity_probe.py to check it from a
-       machine with real internet access).
-    3. This is a single point of failure: the service can disappear
+    2. This is a single point of failure: the service can disappear
        without notice (spec §4.1). Do not assume availability.
+
+  URL construction (list/(condition).(format)?limit=N) and the response
+  field names below (pubdate as 'YYYY-MM-DD HH:MM:SS' JST, company_code as
+  a 5-digit ticker+check-digit) were confirmed against a live response
+  during Phase 2 development — see fetch_raw_by_ticker()/--raw on
+  scripts/tdnet_connectivity_probe.py if the service's shape ever changes.
 
   A minimum polling interval is enforced (see min_interval_seconds) per
   spec §13 rule 5 ("Interval設定を必ず組み込むこと") to avoid hammering a
@@ -24,7 +24,6 @@ RISK / UNCERTAINTY NOTICE (do not remove — spec's 補足 flags this as
 
 from __future__ import annotations
 
-import email.utils
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -171,27 +170,27 @@ class TDnetClient:
 
 
 def _normalize_ticker(company_code: str) -> str:
-    """The unofficial API is documented as reporting a 5-digit code (4-digit
-    ticker + check digit, e.g. '72030' for ticker '7203'). Falls back to the
-    raw value if it doesn't match that shape — MUST be re-verified against a
-    live response (see module docstring) before trusting this in production.
-    """
+    """The API reports a 5-digit code (4-digit ticker + check digit, e.g.
+    '72030' for ticker '7203' — confirmed against a live response). Falls
+    back to the raw value if it doesn't match that shape (e.g. a 4-character
+    alphanumeric code under JPX's newer ticker format)."""
     code = (company_code or "").strip()
     if len(code) == 5 and code.isdigit():
         return code[:4]
     return code
 
 
+PUBDATE_FORMAT = "%Y-%m-%d %H:%M:%S"  # e.g. '2026-08-07 15:30:00', confirmed live — no tz offset, implicitly JST
+
+
 def _parse_pubdate(pubdate: Optional[str]) -> Optional[datetime]:
     if not pubdate:
         return None
     try:
-        parsed = email.utils.parsedate_to_datetime(pubdate)
+        parsed = datetime.strptime(pubdate, PUBDATE_FORMAT)
     except (TypeError, ValueError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=JST)
-    return parsed.astimezone(JST)
+    return parsed.replace(tzinfo=JST)
 
 
 def _estimate_confidence(
