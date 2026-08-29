@@ -42,7 +42,10 @@ POSITIVE_CATEGORIES: tuple[CategoryDef, ...] = (
     CategoryDef(
         code="A",
         name="業績予想の上方修正",
-        patterns=("上方修正", "増額修正", "予想を上回る見通し", "上振れ"),
+        # '特別利益の発生' added after Phase 3 manual review (real ticker
+        # 4840 disclosures): a one-time gain is the direct positive mirror
+        # of SOFT_NEGATIVE's '特別損失' and was being missed entirely.
+        patterns=("上方修正", "増額修正", "予想を上回る見通し", "上振れ", "特別利益"),
         points=30,
     ),
     CategoryDef(
@@ -54,19 +57,41 @@ POSITIVE_CATEGORIES: tuple[CategoryDef, ...] = (
     CategoryDef(
         code="C",
         name="自己株式取得（自社株買い）",
-        patterns=(r"自己株式.{0,10}取得", "自社株買い"),
+        # '自己株式消却' (retirement, not acquisition) added after manual
+        # review — a related but distinct shareholder-friendly action that
+        # the original 'X株式.取得' pattern doesn't cover.
+        patterns=(r"自己株式.{0,10}取得", "自社株買い", r"自己株式.{0,10}消却"),
         points=15,
     ),
     CategoryDef(
         code="D",
         name="大型受注・契約",
-        patterns=("受注", "契約締結", r"業務提携.{0,10}契約", "大型契約"),
+        # Plain '受注' false-positived on '受注損失引当金繰入額の計上'
+        # (a LOSS provision on a contract, i.e. bad news) during manual
+        # review of real ticker 3907 data — excluded via negative lookahead
+        # rather than dropping '受注' entirely, since bare '受注...のお知らせ'
+        # is the common positive case. '戦略的提携' added for the real
+        # ticker 4840 case that used that wording instead of '業務提携'.
+        patterns=(r"受注(?!損失)", "契約締結", r"業務提携.{0,10}契約", "大型契約", "戦略的提携"),
         points=20,
     ),
     CategoryDef(
         code="E",
         name="M&A・資本業務提携",
-        patterns=("資本業務提携", "子会社化", "株式公開買付", "TOB", "M&A"),
+        # '株式公開買付' was too narrow to match the real wording used by an
+        # actual TOB disclosure against ticker 7743 ('公開買付けの開始に
+        # 関するお知らせ', no '株式' prefix) — missing this is a severe
+        # recall failure since a TOB is one of the most material events a
+        # stock can have. Broadened to bare '公開買付'. '株式取得'/
+        # '事業譲受'/'会社分割' added for other real misses found in the
+        # same review (4840, 3987, 7743).
+        # '株式取得' excludes a '自己'/'自社' prefix so it doesn't collide
+        # with category C's self-buyback disclosures (e.g. '自己株式取得
+        # に関するお知らせ' contains '株式取得' as a bare substring).
+        patterns=(
+            "資本業務提携", "子会社化", "公開買付", "TOB", "M&A",
+            r"(?<!自己)(?<!自社)株式取得", "事業譲受", "会社分割",
+        ),
         points=25,
     ),
     CategoryDef(
@@ -110,6 +135,7 @@ SOFT_NEGATIVE_PATTERNS: tuple[tuple[str, str, int], ...] = (
     ("下振れ", r"予想を下回る見通し|下振れ", -20),
     ("減損損失", "減損損失", -15),
     ("特別損失", "特別損失", -15),
+    ("受注損失引当金", "受注損失", -15),
     ("減配", r"配当予想.{0,10}減額|減配|無配", -15),
     ("訴訟提起", r"訴訟.{0,10}提起|損害賠償.{0,10}請求", -10),
     ("行政処分", r"行政処分|業務改善命令|課徴金", -15),

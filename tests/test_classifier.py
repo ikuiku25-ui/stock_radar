@@ -128,6 +128,54 @@ def test_fullwidth_text_is_normalized_before_matching():
     assert result.category == "E"
 
 
+def test_real_world_loss_provision_is_not_false_positive_category_d():
+    """Regression: '受注損失引当金繰入額の計上に関するお知らせ' (real ticker
+    3907 disclosure) was matching category D on bare '受注', mislabeling a
+    LOSS provision as a positive large-order win."""
+    result = classify_disclosure("受注損失引当金繰入額の計上に関するお知らせ", "本文")
+    assert result.category is None
+    assert result.negative_penalty_raw < 0
+
+
+def test_real_world_tob_target_matches_category_e():
+    """Regression: a real TOB against ticker 7743
+    ('...の普通株式に対する公開買付けの開始に関するお知らせ') was missed
+    entirely because the dictionary only had the narrower '株式公開買付'."""
+    result = classify_disclosure(
+        "株式会社シードの普通株式に対する公開買付けの開始に関するお知らせ", "本文"
+    )
+    assert "E" in result.category.split(",")
+
+
+def test_real_world_special_gain_matches_category_a():
+    """Regression: '特別利益の発生及び通期業績予想の修正に関するお知らせ'
+    (real ticker 4840 disclosure) matched nothing."""
+    result = classify_disclosure("特別利益の発生及び通期業績予想の修正に関するお知らせ", "本文")
+    assert "A" in result.category.split(",")
+
+
+def test_real_world_treasury_share_cancellation_matches_category_c():
+    """Regression: '自己株式消却に関するお知らせ' (real ticker 4840
+    disclosure) matched nothing — distinct from C's buyback patterns."""
+    result = classify_disclosure("自己株式消却に関するお知らせ", "本文")
+    assert result.category == "C"
+
+
+def test_third_party_stock_acquisition_matches_e_not_c():
+    """New '株式取得' pattern on category E must not collide with C's
+    self-buyback patterns (spec's own disclosure titles distinguish '自己
+    株式取得' from a bare third-party '株式取得')."""
+    result = classify_disclosure(
+        "株式会社LIMNOの株式取得に向けた基本合意書締結に関するお知らせ", "本文"
+    )
+    assert result.category == "E"
+
+
+def test_self_buyback_still_excludes_category_e():
+    result = classify_disclosure("自己株式取得に関するお知らせ", "自己株式の取得を決議しました。")
+    assert result.category == "C"
+
+
 def test_matched_names_and_terms_are_populated_for_audit():
     result = classify_disclosure("上方修正のお知らせ", "業績予想を上方修正いたします。")
     assert result.matched_positive_names == ["業績予想の上方修正"]
