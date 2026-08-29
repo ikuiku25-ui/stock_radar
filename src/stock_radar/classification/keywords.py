@@ -19,6 +19,17 @@ Category letters intentionally run A-G (spec's DDL comment says "A〜F",
 but 株式分割 doesn't fit cleanly as a same-weight 7th sibling of the other
 six — see CategoryDef for G below). The `disclosures.category` column has
 no CHECK constraint, so this doesn't require a schema change.
+
+KNOWN LIMITATION (accepted by user, Phase 3): `disclosures.raw_text` is
+currently just the disclosure title (Phase 2 deferred real PDF-body
+extraction — see collectors/repository.py's save_disclosure docstring).
+A title like "業績予想の修正及び配当予想の修正に関するお知らせ" doesn't
+state whether the revision is upward or downward — that only appears in
+the PDF body's numbers — so such disclosures are structurally
+unclassifiable from title alone and will match neither category A nor any
+SOFT_NEGATIVE pattern. Manual review against the real 4-ticker Phase 2
+data found this affects ~5/80 (~6%) of real disclosures. Revisit if/when
+PDF body text extraction is added.
 """
 
 from __future__ import annotations

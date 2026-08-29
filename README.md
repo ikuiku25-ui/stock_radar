@@ -34,20 +34,23 @@ python3 scripts/collect_case_study_data.py --db-path data/stock_radar.db3
 
 ### Phase 3（材料分類）
 
-- `src/stock_radar/classification/keywords.py`: カテゴリA〜G（上方修正/増配/自社株買い/大型受注・契約/M&A・資本業務提携/新製品・特許・承認/株式分割）＋HARD_BLOCK（民事再生・上場廃止等、存続性リスクのみ）＋SOFT_NEGATIVE（下方修正・減損等、ポジティブと共存）のキーワード辞書。**v1.2の実辞書は現存せず、v1.3仕様書にも本体が含まれていなかったため新規設計**（詳細はファイル冒頭のPROVENANCE NOTICE参照）。実データでの精度検証はまだ未実施。
+- `src/stock_radar/classification/keywords.py`: カテゴリA〜G（上方修正/増配/自社株買い/大型受注・契約/M&A・資本業務提携/新製品・特許・承認/株式分割）＋HARD_BLOCK（民事再生・上場廃止等、存続性リスクのみ）＋SOFT_NEGATIVE（下方修正・減損等、ポジティブと共存）のキーワード辞書。**v1.2の実辞書は現存せず、v1.3仕様書にも本体が含まれていなかったため新規設計**（詳細はファイル冒頭のPROVENANCE NOTICE参照）。
 - `src/stock_radar/classification/classifier.py`: `classify_disclosure(title, raw_text)` — NFKC正規化後にキーワード辞書と照合し、`category`/`positive_material_raw`/`negative_penalty_raw`/`is_hard_block`を算出。HARD_BLOCKによるスコアのゼロ化はここでは行わない（disclosuresの生の値はそのまま記録し、ゼロ化はPhase 4のスコアリング時に適用、仕様書§8.3）。
 - `src/stock_radar/classification/repository.py`: 分類結果を`disclosures`テーブルに書き戻す。
 - `scripts/classify_disclosures.py`: DB内の全開示を分類（辞書修正後の再実行にも対応、毎回全件再分類）。
 - `scripts/review_classifications.py`: 開示タイトルと分類結果を並べて表示する手動レビュー用CLI。
 
-**要実施**: Phase 2で収集した実データに対して分類を実行し、手動で適合率・再現率を確認してください（仕様書§12 Phase 3の完了条件）。
+**実データでの手動精度確認は実施済み**（仕様書§12 Phase 3の完了条件）。実際の4銘柄・80件の開示に対して分類を実行し、レビューの結果、以下を修正:
+- 誤検出: 「受注損失引当金繰入額の計上」（悪材料）が「受注」に一致し誤って好材料判定されていた問題を修正
+- 重大な見逃し: 実際のTOB（公開買付け）開示が辞書の表記違いで検出できていなかった問題を修正
+- その他、特別利益の発生・自己株式消却・株式取得（M&A文脈）・事業譲受・会社分割・戦略的提携のキーワードを追加
+
+**既知の限界**（ユーザー承認済み、対応は先送り）: `raw_text`は現状タイトルのみ（Phase 2でPDF本文抽出を先送りしたため）。「業績予想の修正に関するお知らせ」のように、本文を見なければ上方/下方が判別できないタイトルは分類不能（実データ80件中約5件に影響）。`keywords.py`冒頭のKNOWN LIMITATIONコメント参照。
 
 ```bash
 python3 scripts/classify_disclosures.py --db-path data/stock_radar.db3
 python3 scripts/review_classifications.py --db-path data/stock_radar.db3
 ```
-
-出力された各開示のタイトルと`category`/`positive_raw`/`HARD_BLOCK`/`SOFT_NEGATIVE`を見比べて、明らかな誤分類（例: 上方修正なのに検出されない、無関係な開示がカテゴリ判定されている等）があれば教えてください。`keywords.py`のパターンを調整します。
 
 ### セットアップ
 
