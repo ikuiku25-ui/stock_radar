@@ -15,24 +15,30 @@ DISCLOSED_AT_RFC2822 = "Thu, 20 Aug 2026 15:00:00 +0900"
 
 
 class FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload=None, raw_text=None, status_code=200, content_type="application/json"):
         self._payload = payload
+        self.text = raw_text if raw_text is not None else ""
+        self.status_code = status_code
+        self.headers = {"Content-Type": content_type}
 
     def raise_for_status(self):
         pass
 
     def json(self):
+        if self._payload is None:
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
         return self._payload
 
 
 class FakeSession:
-    def __init__(self, payload):
+    def __init__(self, payload=None, response=None):
         self._payload = payload
+        self._response = response
         self.requested_urls: list[str] = []
 
     def get(self, url, timeout=None):
         self.requested_urls.append(url)
-        return FakeResponse(self._payload)
+        return self._response or FakeResponse(self._payload)
 
 
 def _make_client(payload, clock_dt, session=None, **kwargs):
@@ -126,6 +132,19 @@ def test_unexpected_response_shape_raises():
     client = _make_client({"unexpected": True}, DISCLOSED_AT)
     with pytest.raises(TDnetClientError):
         client.fetch_recent()
+
+
+def test_non_json_response_raises_with_diagnostic_detail():
+    """Reproduces the real-world failure seen against the live unofficial
+    API: an empty/non-JSON body must surface status code + body snippet,
+    not a bare requests.JSONDecodeError, so it's actually debuggable."""
+    session = FakeSession(response=FakeResponse(payload=None, raw_text="", status_code=404, content_type="text/html"))
+    client = _make_client(None, DISCLOSED_AT, session=session)
+    with pytest.raises(TDnetClientError) as exc_info:
+        client.fetch_recent()
+    message = str(exc_info.value)
+    assert "404" in message
+    assert "text/html" in message
 
 
 def test_throttle_sleeps_for_remaining_interval():

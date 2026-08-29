@@ -92,7 +92,18 @@ class TDnetClient:
         fetched_at_dt = self._clock()
         response = self._session.get(url, timeout=self._timeout_seconds)
         response.raise_for_status()
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            # requests.exceptions.JSONDecodeError subclasses ValueError;
+            # catching the parent keeps this independent of the JSON
+            # backend requests uses under the hood.
+            snippet = response.text[:500]
+            raise TDnetClientError(
+                f"Non-JSON response from {url} "
+                f"(HTTP {response.status_code}, content-type "
+                f"{response.headers.get('Content-Type')!r}): {snippet!r}"
+            ) from exc
         return self._parse_items(payload, fetched_at_dt)
 
     def _throttle(self) -> None:
