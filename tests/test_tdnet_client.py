@@ -149,6 +149,13 @@ def test_pdf_url_and_company_name_passthrough():
     assert d.company_name == "テスト株式会社"
 
 
+def test_fetch_raw_by_ticker_returns_unparsed_payload():
+    payload = _sample_payload()
+    client = _make_client(payload, DISCLOSED_AT)
+    raw = client.fetch_raw_by_ticker("7203", limit=5)
+    assert raw == payload
+
+
 def test_unexpected_response_shape_raises():
     client = _make_client({"unexpected": True}, DISCLOSED_AT)
     with pytest.raises(TDnetClientError):

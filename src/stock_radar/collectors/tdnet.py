@@ -97,7 +97,19 @@ class TDnetClient:
         condition = "-".join(tickers)
         return self._fetch(f"{self._base_url}/{condition}.json", limit=limit)
 
+    def fetch_raw_by_ticker(self, ticker: str, limit: int = 100) -> dict:
+        """Fetch the raw JSON payload for a ticker with NO per-record
+        parsing applied. Use this to verify the live API's actual field
+        names/shapes (see module docstring) before trusting _parse_record.
+        """
+        payload, _ = self._fetch_payload(f"{self._base_url}/{ticker}.json", limit)
+        return payload
+
     def _fetch(self, url: str, limit: int) -> list[RawDisclosure]:
+        payload, fetched_at_dt = self._fetch_payload(url, limit)
+        return self._parse_items(payload, fetched_at_dt)
+
+    def _fetch_payload(self, url: str, limit: int) -> tuple[dict, datetime]:
         self._throttle()
         fetched_at_dt = self._clock()
         response = self._session.get(url, params={"limit": limit}, timeout=self._timeout_seconds)
@@ -114,7 +126,7 @@ class TDnetClient:
                 f"(HTTP {response.status_code}, content-type "
                 f"{response.headers.get('Content-Type')!r}): {snippet!r}"
             ) from exc
-        return self._parse_items(payload, fetched_at_dt)
+        return payload, fetched_at_dt
 
     def _throttle(self) -> None:
         """Enforce min_interval_seconds between successive HTTP requests."""

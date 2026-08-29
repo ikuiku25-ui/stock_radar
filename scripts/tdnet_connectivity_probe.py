@@ -14,6 +14,7 @@ schema, single point of failure).
 
 Usage:
     python scripts/tdnet_connectivity_probe.py --ticker 7203 --limit 5
+    python scripts/tdnet_connectivity_probe.py --ticker 7203 --limit 1 --raw
 """
 
 from __future__ import annotations
@@ -33,11 +34,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--ticker", default="7203", help="4-digit ticker to query (default: 7203)")
     parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="print the raw JSON payload verbatim instead of the parsed result "
+        "(use this to check actual field names, e.g. the pubdate format)",
+    )
     args = parser.parse_args()
 
     client = TDnetClient()
     print(f"Fetching up to {args.limit} recent disclosure(s) for ticker {args.ticker} ...", file=sys.stderr)
     try:
+        if args.raw:
+            payload = client.fetch_raw_by_ticker(args.ticker, limit=args.limit)
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return
         disclosures = client.fetch_by_ticker(args.ticker, limit=args.limit)
     except TDnetClientError as exc:
         print(f"FAILED to parse response: {exc}", file=sys.stderr)
