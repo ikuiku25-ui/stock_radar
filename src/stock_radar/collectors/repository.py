@@ -78,7 +78,7 @@ def save_price_bars(conn: sqlite3.Connection, bars: list[PriceBar]) -> None:
 def is_intraday_disclosure(disclosed_at_iso: str) -> bool:
     """True if disclosed_at falls before 15:00 JST (spec §8.2): the trading
     day's price_data is then still unconfirmed and must not be used."""
-    return _to_jst(disclosed_at_iso).time() < INTRADAY_CUTOFF
+    return to_jst(disclosed_at_iso).time() < INTRADAY_CUTOFF
 
 
 def get_available_price_asof(
@@ -93,7 +93,7 @@ def get_available_price_asof(
     Always restricted to session_type='close' — 'pts_reference' rows are
     never returned here, by construction.
     """
-    dt = _to_jst(disclosed_at_iso)
+    dt = to_jst(disclosed_at_iso)
     disclosure_date = dt.date().isoformat()
 
     if dt.time() < INTRADAY_CUTOFF:
@@ -109,7 +109,7 @@ def get_available_price_asof(
     return conn.execute(query, (ticker, disclosure_date)).fetchone()
 
 
-def _to_jst(iso_str: str) -> datetime:
+def to_jst(iso_str: str) -> datetime:
     dt = datetime.fromisoformat(iso_str)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=JST)

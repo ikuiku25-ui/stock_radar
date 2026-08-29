@@ -3,7 +3,7 @@
 日本株の適時開示（TDnet）を分析し、材料・需給・テーマの観点でランキングする個人用ツール。
 仕様は [`docs/implementation_spec_v1.3.md`](docs/implementation_spec_v1.3.md) を参照（Phase制で段階実装、各Phase完了後にユーザー承認を得て次に進む）。
 
-## 現在のステータス: Phase 3（材料分類）
+## 現在のステータス: Phase 4（スコアリング）
 
 ### Phase 1（SQLite + モックデータ + テスト基盤）
 
@@ -51,6 +51,26 @@ python3 scripts/collect_case_study_data.py --db-path data/stock_radar.db3
 python3 scripts/classify_disclosures.py --db-path data/stock_radar.db3
 python3 scripts/review_classifications.py --db-path data/stock_radar.db3
 ```
+
+### Phase 4（スコアリング）
+
+- `src/stock_radar/scoring/material.py`: `material_score = 0 if HARD_BLOCK else min(weight_material, max(0, positive+negative))`（仕様書§8.3の式そのまま＋weight_materialでの上限キャップ）。
+- `src/stock_radar/scoring/supply_demand.py`: `volume_ratio`（開示日を含まない過去20営業日平均が分母、Phase 2で計算済みの`avg_volume_20d`をそのまま利用）に応じた加点＋小型株ボーナス。**両方とも仕様書に具体的な数値がないため、このプロジェクト独自の仮説として設計**（ファイル冒頭のHYPOTHESIS NOTICE参照、Phase 6のバックテストで検証・調整する前提）。
+- `src/stock_radar/scoring/theme.py`: `theme_keywords`と照合し、該当テーマがその日「アツい」（`theme_hot_status.hot_flag`）かで加点。場中開示は前営業日のhot_flagを参照するLook-ahead bias対策込み。**`theme_hot_status`を実際に埋めるパイプライン（値上がり率ランキング等）はまだ存在しないため、実データでは現状ほぼ常に0点**。
+- `src/stock_radar/scoring/rank.py`: `total_score`（0〜100）からS/A/B/noneを判定。**閾値（S:80以上/A:60以上/B:40以上）も仕様書に記載がないため独自の仮説**。
+- `src/stock_radar/scoring/scorer.py`: 上記を統合するオーケストレーター。価格データは必ず`get_available_price_asof()`経由で取得し、Look-ahead bias防止を徹底。
+- `src/stock_radar/scoring/weight_sets.py`: ベースライン`weight_set`（50/30/20、ウォークフォワード期間なし）を用意。
+- `scripts/score_disclosures.py`: DB内の全開示をスコアリング（再実行時は対象weight_setの既存スコアを削除してから再投入、安全に再実行可能）。
+- `scripts/review_scores.py`: 開示タイトルと材料/需給/テーマ/合計スコア・ランクを並べて表示する手動レビュー用CLI。
+
+**要実施**: Phase 2/3で収集・分類済みの実データに対してスコアリングを実行し、4銘柄でスコアが期待レンジ内に収まるか確認してください（仕様書§12 Phase 4の完了条件）。
+
+```bash
+python3 scripts/score_disclosures.py --db-path data/stock_radar.db3
+python3 scripts/review_scores.py --db-path data/stock_radar.db3 --min-rank B
+```
+
+出力された各開示のスコア内訳を見て、明らかにおかしい値（例: 好材料なのに需給がゼロで極端に低い、逆に無関係な開示が高スコアになっている等）があれば教えてください。テーマスコアは上記の理由でほぼ全件0になる見込みです（想定通り）。
 
 ### セットアップ
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from stock_radar.classification.classifier import classify_disclosure
 from stock_radar.mock_data import CASE_STUDY_TICKERS
+from stock_radar.scoring.material import compute_material_score
+from stock_radar.scoring.rank import determine_rank
 
 
 def test_all_case_study_tickers_present(seeded_conn):
@@ -73,6 +75,38 @@ def test_disclosure_classification_fields_match_live_classifier(seeded_conn):
         assert row["positive_material_raw"] == expected.positive_material_raw
         assert row["negative_penalty_raw"] == expected.negative_penalty_raw
         assert bool(row["is_hard_block"]) == expected.is_hard_block
+
+
+def test_score_fields_match_live_scoring_functions(seeded_conn):
+    """Guards against the mock scores drifting from the real Phase 4
+    material_score/rank logic the same way test_disclosure_classification_
+    fields_match_live_classifier guards Phase 3."""
+    rows = seeded_conn.execute(
+        """
+        SELECT s.material_score, s.total_score, s.notification_rank,
+               d.positive_material_raw, d.negative_penalty_raw, d.is_hard_block
+        FROM scores s JOIN disclosures d ON d.disclosure_id = s.disclosure_id
+        """
+    ).fetchall()
+    assert len(rows) == 4
+    for row in rows:
+        expected_material = compute_material_score(
+            row["positive_material_raw"], row["negative_penalty_raw"],
+            bool(row["is_hard_block"]), weight_material=50,
+        )
+        assert row["material_score"] == expected_material
+        assert row["notification_rank"] == determine_rank(row["total_score"])
+
+
+def test_mock_scores_span_all_rank_tiers(seeded_conn):
+    """The illustrative supply_demand/theme constants were chosen so the 4
+    disclosures land on S/A/B/none respectively — demonstrating the full
+    ranking spread end to end."""
+    rows = seeded_conn.execute(
+        "SELECT ticker, notification_rank FROM scores ORDER BY ticker"
+    ).fetchall()
+    ranks_by_ticker = {row["ticker"]: row["notification_rank"] for row in rows}
+    assert ranks_by_ticker == {"3907": "none", "3987": "B", "4840": "S", "7743": "A"}
 
 
 def test_outcome_tracking_covers_every_score(seeded_conn):

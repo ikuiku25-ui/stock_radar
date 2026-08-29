@@ -14,6 +14,8 @@ from __future__ import annotations
 import sqlite3
 
 from .classification.classifier import classify_disclosure
+from .scoring.material import compute_material_score
+from .scoring.rank import determine_rank
 
 CASE_STUDY_TICKERS = ["4840", "7743", "3987", "3907"]
 
@@ -207,24 +209,39 @@ def _insert_weight_set(conn: sqlite3.Connection) -> int:
 def _insert_scores(
     conn: sqlite3.Connection, disclosure_ids: list[int], weight_set_id: int
 ) -> list[int]:
-    # material_score = 0 if is_hard_block else max(0, positive_raw + negative_raw)
-    # (spec §8.3). material figures below are derived from the real Phase 3
-    # classifier's output for each _insert_disclosures row:
-    #   4840: category A,  positive=30, negative=0   -> max(0, 30+0)   = 30
-    #   7743: category C,  positive=15, negative=0   -> max(0, 15+0)   = 15
-    #   3987: category F,  positive=15, negative=-50 -> max(0, 15-50)  = 0
-    #   3907: is_hard_block=True                     -> forced         = 0
-    # supply_demand/theme are illustrative only (Phase 4 doesn't exist yet).
+    # material_score is computed via the real Phase 4 compute_material_score()
+    # from each disclosure's actual (Phase 3 classifier-derived) raw fields,
+    # so it can't drift out of sync the way the old hand-picked values did.
+    # supply_demand/theme stay illustrative (no real price/theme data backs
+    # this synthetic dataset) but are chosen so the four disclosures land on
+    # S/A/B/none respectively when run through the real determine_rank(),
+    # demonstrating the full ranking spread:
+    #   4840: material=30 (A)          + supply=30 + theme=20 -> total=80 -> S
+    #   7743: material=15 (C)          + supply=25 + theme=20 -> total=60 -> A
+    #   3987: material=0  (F, negative dominates) + supply=25 + theme=15 -> total=40 -> B
+    #   3907: material=0  (HARD_BLOCK) + supply=3  + theme=0  -> total=3  -> none
     rows = [
-        # (ticker, disclosure_id, material, supply_demand, theme, rank, scored_at)
-        ("4840", disclosure_ids[0], 30, 22, 8, "S", "2026-08-20T15:10:00+09:00"),
-        ("7743", disclosure_ids[1], 15, 15, 4, "A", "2026-08-21T15:35:00+09:00"),
-        ("3987", disclosure_ids[2], 0, 10, 2, "B", "2026-08-22T15:15:00+09:00"),
-        ("3907", disclosure_ids[3], 0, 3, 0, "none", "2026-08-25T16:05:00+09:00"),
+        # (ticker, disclosure_id, supply_demand, theme, scored_at)
+        ("4840", disclosure_ids[0], 30, 20, "2026-08-20T15:10:00+09:00"),
+        ("7743", disclosure_ids[1], 25, 20, "2026-08-21T15:35:00+09:00"),
+        ("3987", disclosure_ids[2], 25, 15, "2026-08-22T15:15:00+09:00"),
+        ("3907", disclosure_ids[3], 3, 0, "2026-08-25T16:05:00+09:00"),
     ]
     score_ids = []
-    for ticker, disclosure_id, material, supply, theme, rank, scored_at in rows:
+    for ticker, disclosure_id, supply, theme, scored_at in rows:
+        disclosure = conn.execute(
+            "SELECT positive_material_raw, negative_penalty_raw, is_hard_block "
+            "FROM disclosures WHERE disclosure_id = ?",
+            (disclosure_id,),
+        ).fetchone()
+        material = compute_material_score(
+            disclosure["positive_material_raw"],
+            disclosure["negative_penalty_raw"],
+            bool(disclosure["is_hard_block"]),
+            weight_material=50,
+        )
         total = material + supply + theme
+        rank = determine_rank(total)
         cur = conn.execute(
             """
             INSERT INTO scores
