@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from stock_radar.classification.classifier import classify_disclosure
 from stock_radar.mock_data import CASE_STUDY_TICKERS
 
 
@@ -55,6 +56,23 @@ def test_watchlist_only_contains_s_and_a_ranks(seeded_conn):
     ).fetchall()
     ranks = {row["notification_rank"] for row in rows}
     assert ranks <= {"S", "A"}
+
+
+def test_disclosure_classification_fields_match_live_classifier(seeded_conn):
+    """Guards against the mock dataset silently drifting from the real
+    Phase 3 classifier's behavior (they were hand-picked and out of sync
+    before Phase 3 introduced classify_disclosure())."""
+    rows = seeded_conn.execute(
+        "SELECT title, raw_text, category, positive_material_raw, "
+        "negative_penalty_raw, is_hard_block FROM disclosures"
+    ).fetchall()
+    assert len(rows) == 4
+    for row in rows:
+        expected = classify_disclosure(row["title"], row["raw_text"])
+        assert row["category"] == expected.category
+        assert row["positive_material_raw"] == expected.positive_material_raw
+        assert row["negative_penalty_raw"] == expected.negative_penalty_raw
+        assert bool(row["is_hard_block"]) == expected.is_hard_block
 
 
 def test_outcome_tracking_covers_every_score(seeded_conn):

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from .classification.classifier import classify_disclosure
+
 CASE_STUDY_TICKERS = ["4840", "7743", "3987", "3907"]
 
 
@@ -55,33 +57,36 @@ def _insert_companies(conn: sqlite3.Connection) -> None:
 
 
 def _insert_disclosures(conn: sqlite3.Connection) -> list[int]:
-    # (ticker, title, raw_text, disclosed_at, category, positive_raw,
-    #  negative_raw, is_hard_block)
+    # Classification fields (category/positive_material_raw/
+    # negative_penalty_raw/is_hard_block) are derived from the real Phase 3
+    # classifier rather than hand-picked, so this mock data can't silently
+    # drift out of sync with classify_disclosure()'s actual behavior.
     rows = [
         (
             "4840", "業績予想の上方修正に関するお知らせ",
             "当社は本日、通期業績予想の上方修正を決議いたしました。修正率は営業利益で+35%です。",
-            "2026-08-20T15:05:00+09:00", "A", 30, 0, 0,
+            "2026-08-20T15:05:00+09:00",
         ),
         (
             "7743", "自己株式取得に関するお知らせ",
             "発行済株式総数の3.2%を上限として自己株式を取得することを決議しました。",
-            "2026-08-21T15:30:00+09:00", "C", 18, 0, 0,
+            "2026-08-21T15:30:00+09:00",
         ),
         (
             "3987", "特別損失の計上及び業績予想の下方修正に関するお知らせ",
             "一部資産について減損損失を計上し、通期業績予想を下方修正いたします。なお、主力製品が世界初の認証を取得しました。",
-            "2026-08-22T15:10:00+09:00", "F,E", 15, -10, 0,
+            "2026-08-22T15:10:00+09:00",
         ),
         (
             "3907", "民事再生法の適用申請に関するお知らせ",
             "当社は本日、東京地方裁判所に民事再生法の適用を申請いたしました。",
-            "2026-08-25T16:00:00+09:00", "F", 0, -50, 1,
+            "2026-08-25T16:00:00+09:00",
         ),
     ]
 
     disclosure_ids: list[int] = []
-    for ticker, title, raw_text, disclosed_at, category, pos_raw, neg_raw, hard_block in rows:
+    for ticker, title, raw_text, disclosed_at in rows:
+        result = classify_disclosure(title, raw_text)
         cur = conn.execute(
             """
             INSERT INTO disclosures
@@ -96,7 +101,8 @@ def _insert_disclosures(conn: sqlite3.Connection) -> list[int]:
                 disclosed_at,  # market_available_at ≒ disclosed_at
                 disclosed_at,  # system_available_at: assume immediate detection in mock data
                 disclosed_at,  # fetched_at
-                category, pos_raw, neg_raw, hard_block,
+                result.category, result.positive_material_raw,
+                result.negative_penalty_raw, 1 if result.is_hard_block else 0,
             ),
         )
         disclosure_ids.append(cur.lastrowid)
@@ -202,12 +208,18 @@ def _insert_scores(
     conn: sqlite3.Connection, disclosure_ids: list[int], weight_set_id: int
 ) -> list[int]:
     # material_score = 0 if is_hard_block else max(0, positive_raw + negative_raw)
-    # (spec §8.3). Values chosen to line up with _insert_disclosures rows.
+    # (spec §8.3). material figures below are derived from the real Phase 3
+    # classifier's output for each _insert_disclosures row:
+    #   4840: category A,  positive=30, negative=0   -> max(0, 30+0)   = 30
+    #   7743: category C,  positive=15, negative=0   -> max(0, 15+0)   = 15
+    #   3987: category F,  positive=15, negative=-50 -> max(0, 15-50)  = 0
+    #   3907: is_hard_block=True                     -> forced         = 0
+    # supply_demand/theme are illustrative only (Phase 4 doesn't exist yet).
     rows = [
         # (ticker, disclosure_id, material, supply_demand, theme, rank, scored_at)
         ("4840", disclosure_ids[0], 30, 22, 8, "S", "2026-08-20T15:10:00+09:00"),
-        ("7743", disclosure_ids[1], 18, 15, 4, "A", "2026-08-21T15:35:00+09:00"),
-        ("3987", disclosure_ids[2], 5, 10, 2, "B", "2026-08-22T15:15:00+09:00"),
+        ("7743", disclosure_ids[1], 15, 15, 4, "A", "2026-08-21T15:35:00+09:00"),
+        ("3987", disclosure_ids[2], 0, 10, 2, "B", "2026-08-22T15:15:00+09:00"),
         ("3907", disclosure_ids[3], 0, 3, 0, "none", "2026-08-25T16:05:00+09:00"),
     ]
     score_ids = []
