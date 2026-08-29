@@ -81,16 +81,26 @@ class TDnetClient:
 
     def fetch_recent(self, limit: int = 100) -> list[RawDisclosure]:
         """Fetch the most recent disclosures across all tickers."""
-        return self._fetch(f"{self._base_url}/recent/{limit}.json")
+        return self._fetch(f"{self._base_url}/recent.json", limit=limit)
 
     def fetch_by_ticker(self, ticker: str, limit: int = 100) -> list[RawDisclosure]:
-        """Fetch recent disclosures for a single 4-digit ticker."""
-        return self._fetch(f"{self._base_url}/{ticker}/{limit}.json")
+        """Fetch recent disclosures for a single ticker code."""
+        return self._fetch(f"{self._base_url}/{ticker}.json", limit=limit)
 
-    def _fetch(self, url: str) -> list[RawDisclosure]:
+    def fetch_by_tickers(self, tickers: list[str], limit: int = 100) -> list[RawDisclosure]:
+        """Fetch recent disclosures for multiple ticker codes in ONE request
+        (the API's documented '-'-joined condition, e.g. '7203-130A-9984').
+        Prefer this over calling fetch_by_ticker in a loop when polling a
+        fixed set of tickers — it's one HTTP round trip instead of N,
+        which is the more considerate way to use a free, personally-run
+        service (spec §13 rule 5)."""
+        condition = "-".join(tickers)
+        return self._fetch(f"{self._base_url}/{condition}.json", limit=limit)
+
+    def _fetch(self, url: str, limit: int) -> list[RawDisclosure]:
         self._throttle()
         fetched_at_dt = self._clock()
-        response = self._session.get(url, timeout=self._timeout_seconds)
+        response = self._session.get(url, params={"limit": limit}, timeout=self._timeout_seconds)
         response.raise_for_status()
         try:
             payload = response.json()
@@ -100,7 +110,7 @@ class TDnetClient:
             # backend requests uses under the hood.
             snippet = response.text[:500]
             raise TDnetClientError(
-                f"Non-JSON response from {url} "
+                f"Non-JSON response from {getattr(response, 'url', url)} "
                 f"(HTTP {response.status_code}, content-type "
                 f"{response.headers.get('Content-Type')!r}): {snippet!r}"
             ) from exc

@@ -15,11 +15,12 @@ DISCLOSED_AT_RFC2822 = "Thu, 20 Aug 2026 15:00:00 +0900"
 
 
 class FakeResponse:
-    def __init__(self, payload=None, raw_text=None, status_code=200, content_type="application/json"):
+    def __init__(self, payload=None, raw_text=None, status_code=200, content_type="application/json", url=""):
         self._payload = payload
         self.text = raw_text if raw_text is not None else ""
         self.status_code = status_code
         self.headers = {"Content-Type": content_type}
+        self.url = url
 
     def raise_for_status(self):
         pass
@@ -34,11 +35,11 @@ class FakeSession:
     def __init__(self, payload=None, response=None):
         self._payload = payload
         self._response = response
-        self.requested_urls: list[str] = []
+        self.requested_urls: list[str] = []  # (url, params) tuples
 
-    def get(self, url, timeout=None):
-        self.requested_urls.append(url)
-        return self._response or FakeResponse(self._payload)
+    def get(self, url, params=None, timeout=None):
+        self.requested_urls.append((url, params))
+        return self._response or FakeResponse(self._payload, url=url)
 
 
 def _make_client(payload, clock_dt, session=None, **kwargs):
@@ -87,7 +88,27 @@ def test_fetch_by_ticker_builds_expected_url():
     session = FakeSession(_sample_payload())
     client = _make_client(_sample_payload(), DISCLOSED_AT, session=session)
     client.fetch_by_ticker("7203", limit=5)
-    assert session.requested_urls == ["https://webapi.yanoshin.jp/webapi/tdnet/list/7203/5.json"]
+    assert session.requested_urls == [
+        ("https://webapi.yanoshin.jp/webapi/tdnet/list/7203.json", {"limit": 5})
+    ]
+
+
+def test_fetch_recent_builds_expected_url():
+    session = FakeSession(_sample_payload())
+    client = _make_client(_sample_payload(), DISCLOSED_AT, session=session)
+    client.fetch_recent(limit=10)
+    assert session.requested_urls == [
+        ("https://webapi.yanoshin.jp/webapi/tdnet/list/recent.json", {"limit": 10})
+    ]
+
+
+def test_fetch_by_tickers_joins_with_hyphen():
+    session = FakeSession(_sample_payload())
+    client = _make_client(_sample_payload(), DISCLOSED_AT, session=session)
+    client.fetch_by_tickers(["7203", "130A", "9984"], limit=20)
+    assert session.requested_urls == [
+        ("https://webapi.yanoshin.jp/webapi/tdnet/list/7203-130A-9984.json", {"limit": 20})
+    ]
 
 
 def test_confidence_is_high_for_small_lag():

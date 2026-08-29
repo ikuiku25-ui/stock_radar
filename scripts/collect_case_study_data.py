@@ -35,7 +35,12 @@ from stock_radar.db.connection import get_connection, init_db  # noqa: E402
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--db-path", default="data/stock_radar.db3")
-    parser.add_argument("--tdnet-limit", type=int, default=20, help="disclosures to fetch per ticker")
+    parser.add_argument(
+        "--tdnet-limit",
+        type=int,
+        default=80,
+        help="max disclosures for the combined 4-ticker request (API's 'limit' param; default 300 upstream)",
+    )
     parser.add_argument("--price-period", default="6mo")
     args = parser.parse_args()
 
@@ -57,19 +62,24 @@ def main() -> None:
 
     tdnet = TDnetClient()
     yf_client = YFinanceClient()
+    tickers = sorted(CASE_STUDY_TICKERS)
 
-    for ticker in sorted(CASE_STUDY_TICKERS):
-        print(f"[TDnet] fetching disclosures for {ticker} ...")
-        try:
-            disclosures = tdnet.fetch_by_ticker(ticker, limit=args.tdnet_limit)
-        except TDnetClientError as exc:
-            print(f"  FAILED: {exc}", file=sys.stderr)
-            continue
-        for disclosure in disclosures:
-            save_disclosure(conn, disclosure)
-        conn.commit()
-        print(f"  -> saved {len(disclosures)} disclosure(s)")
+    print(f"[TDnet] fetching disclosures for {', '.join(tickers)} in ONE combined request ...")
+    try:
+        disclosures = tdnet.fetch_by_tickers(tickers, limit=args.tdnet_limit)
+    except TDnetClientError as exc:
+        print(f"  FAILED: {exc}", file=sys.stderr)
+        disclosures = []
 
+    counts: dict[str, int] = {}
+    for disclosure in disclosures:
+        save_disclosure(conn, disclosure)
+        counts[disclosure.ticker] = counts.get(disclosure.ticker, 0) + 1
+    conn.commit()
+    for ticker in tickers:
+        print(f"  -> {ticker}: saved {counts.get(ticker, 0)} disclosure(s)")
+
+    for ticker in tickers:
         print(f"[yfinance] fetching price history for {ticker} ...")
         bars = yf_client.fetch_daily_bars(ticker, period=args.price_period)
         save_price_bars(conn, bars)

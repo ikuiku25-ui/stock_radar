@@ -14,7 +14,7 @@
 
 ### Phase 2（TDnet取得・yfinance連携）
 
-- `src/stock_radar/collectors/tdnet.py`: TDnet適時開示の収集クライアント。**非公式の個人運営API**（例: やのしん氏形式のJSON API）を利用（仕様書§4.1で「0円だが規約・安定性のグレーゾーン」と明記された手段）。Interval設定（デフォルト30秒間隔）を組み込み済み。レスポンス形式は公開資料ベースの推測であり、**実装着手時に実サービスで再検証が必要**（ファイル冒頭コメント参照）。
+- `src/stock_radar/collectors/tdnet.py`: TDnet適時開示の収集クライアント。**非公式の個人運営API**「TDnet WEB-API（非公式）by Yanoshin」(https://webapi.yanoshin.jp/webapi/tdnet/) を利用（仕様書§4.1で「0円だが規約・安定性のグレーゾーン」と明記された手段）。URL形式は実サービスのAPI仕様ページで確認済み（`list/(条件).(形式)?limit=N`、複数銘柄はハイフン連結）。Interval設定（デフォルト30秒間隔）を組み込み済み。JSONレスポンスの個々のフィールド名（`company_code`等）は公開資料ベースの推測のままなので、初回の実データ取得結果は要確認。
 - `src/stock_radar/collectors/yfinance_client.py`: yfinance経由の日足OHLCV取得。`avg_volume_20d`は当日を含まない過去20営業日平均として計算（Look-ahead bias対策、§6.2/§8.2）。
 - `src/stock_radar/collectors/repository.py`: 収集結果のDB保存＋`get_available_price_asof()` — 場中開示（15:00より前）が当日未確定データを参照できないようにする、§8.2のLook-ahead bias防止ロジックの唯一の入口。
 - `scripts/tdnet_connectivity_probe.py` / `scripts/yfinance_connectivity_probe.py`: 実サービスへの1銘柄疎通テスト用CLI。
