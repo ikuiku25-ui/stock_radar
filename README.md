@@ -3,7 +3,7 @@
 日本株の適時開示（TDnet）を分析し、材料・需給・テーマの観点でランキングする個人用ツール。
 仕様は [`docs/implementation_spec_v1.3.md`](docs/implementation_spec_v1.3.md) を参照（Phase制で段階実装、各Phase完了後にユーザー承認を得て次に進む）。
 
-## 現在のステータス: Phase 4（スコアリング）
+## 現在のステータス: Phase 5（通知）
 
 ### Phase 1（SQLite + モックデータ + テスト基盤）
 
@@ -73,6 +73,39 @@ python3 scripts/review_classifications.py --db-path data/stock_radar.db3
 python3 scripts/score_disclosures.py --db-path data/stock_radar.db3
 python3 scripts/review_scores.py --db-path data/stock_radar.db3 --show-volume-ratio
 ```
+
+### Phase 5（通知）
+
+- `src/stock_radar/notification/message.py`: 通知本文を組み立てる。仕様書§11・§13ルール6に従い、**銘柄コード・会社名・検知した材料・SBIで確認すべき項目の「名前」のみ**を含み、証券会社の実際の値（現在値等）は一切含まない（自動取得しないため）。
+- `src/stock_radar/notification/desktop.py`: デスクトップ通知。**現状macOSのみ対応**（`osascript`、追加インストール不要）。ユーザーの実行環境がMacのため、まずこちらを実装。仕様書が元々想定していたWindows環境向けの実装は未着手（必要になれば追加）。
+- `src/stock_radar/notification/email_notifier.py`: メール通知（標準ライブラリ`smtplib`のみ、追加依存なし）。SMTP認証情報は環境変数から読み込み、**コードやDBに一切保存しない**。
+- `src/stock_radar/notification/service.py`: S/Aランクのみ通知（仕様書§5）。`watchlist`テーブルへの登録が「通知済み」の記録を兼ねる設計 — 全通知手段が失敗した場合はwatchlistに登録せず、次回実行時に再試行される。
+- `scripts/notify_watchlist.py`: 手動トリガー用CLI（仕様書§12 Phase 5の完了条件）。`--dry-run`で送信せず内容確認のみ可能。
+
+**メール通知を使う場合**、以下の環境変数を設定してください（Gmailの場合は通常のパスワードではなく「アプリパスワード」が必要）:
+
+```bash
+export STOCK_RADAR_SMTP_HOST=smtp.gmail.com
+export STOCK_RADAR_SMTP_PORT=587
+export STOCK_RADAR_SMTP_USER=your_address@gmail.com
+export STOCK_RADAR_SMTP_PASSWORD=your_app_password
+export STOCK_RADAR_NOTIFY_EMAIL_TO=your_address@gmail.com
+```
+
+**動作確認**（仕様書§12 Phase 5の完了条件: 手動トリガーで通知確認）:
+
+```bash
+# まず内容だけ確認（送信しない）
+python3 scripts/notify_watchlist.py --db-path data/stock_radar.db3 --dry-run
+
+# デスクトップ通知で送信（Mac）
+python3 scripts/notify_watchlist.py --db-path data/stock_radar.db3 --method desktop
+
+# メールで送信（環境変数の設定が必要）
+python3 scripts/notify_watchlist.py --db-path data/stock_radar.db3 --method email
+```
+
+Phase 2/4で収集・スコアリング済みの実データ（`data/stock_radar.db3`）に対して実行し、通知が正しいタイミング・内容で届くか確認してください。既にwatchlistに入っている銘柄（4840, 7743など）は再通知されません。
 
 ### セットアップ
 
