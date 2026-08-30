@@ -25,6 +25,21 @@ def dataset_tag_for_ticker(ticker: str) -> str:
     return "case_study" if ticker in CASE_STUDY_TICKERS else "statistical"
 
 
+def disclosure_exists(conn: sqlite3.Connection, ticker: str, title: str, disclosed_at: str) -> bool:
+    """(ticker, title, disclosed_at) is used as a practical dedup key for
+    repeated polling (spec §12 Phase 7): fetch_recent()'s window naturally
+    overlaps run to run, and disclosures has no dedicated natural key of
+    its own. Two distinct disclosures colliding on all three fields would
+    be an extraordinarily rare coincidence, not a realistic concern."""
+    return (
+        conn.execute(
+            "SELECT 1 FROM disclosures WHERE ticker = ? AND title = ? AND disclosed_at = ?",
+            (ticker, title, disclosed_at),
+        ).fetchone()
+        is not None
+    )
+
+
 def save_disclosure(conn: sqlite3.Connection, disclosure: RawDisclosure) -> int:
     """Insert one collected disclosure.
 

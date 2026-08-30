@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import requests
 
 from stock_radar.collectors.tdnet import JST, TDnetClient, TDnetClientError
 
@@ -32,14 +33,22 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, payload=None, response=None):
+    def __init__(self, payload=None, response=None, raise_exc=None):
         self._payload = payload
         self._response = response
+        self._raise_exc = raise_exc
         self.requested_urls: list[str] = []  # (url, params) tuples
 
     def get(self, url, params=None, timeout=None):
         self.requested_urls.append((url, params))
+        if self._raise_exc:
+            raise self._raise_exc
         return self._response or FakeResponse(self._payload, url=url)
+
+
+class RaisingResponse(FakeResponse):
+    def raise_for_status(self):
+        raise requests.exceptions.HTTPError("500 Server Error")
 
 
 def _make_client(payload, clock_dt, session=None, **kwargs):
@@ -204,6 +213,32 @@ def test_non_json_response_raises_with_diagnostic_detail():
     message = str(exc_info.value)
     assert "404" in message
     assert "text/html" in message
+
+
+def test_connection_error_is_wrapped_as_tdnet_client_error():
+    """Reproduces a real crash seen in Phase 7: a network-level failure
+    (proxy error, DNS failure, timeout, connection refused — anything
+    under requests.exceptions.RequestException) must not propagate as a
+    raw requests exception, since the daily pipeline only catches
+    TDnetClientError-shaped failures for this stage."""
+    session = FakeSession(raise_exc=requests.exceptions.ProxyError("Unable to connect to proxy"))
+    client = _make_client(None, DISCLOSED_AT, session=session)
+    with pytest.raises(TDnetClientError, match="Unable to connect to proxy"):
+        client.fetch_recent()
+
+
+def test_connection_timeout_is_wrapped_as_tdnet_client_error():
+    session = FakeSession(raise_exc=requests.exceptions.Timeout("timed out"))
+    client = _make_client(None, DISCLOSED_AT, session=session)
+    with pytest.raises(TDnetClientError):
+        client.fetch_recent()
+
+
+def test_http_error_status_is_wrapped_as_tdnet_client_error():
+    session = FakeSession(response=RaisingResponse())
+    client = _make_client(None, DISCLOSED_AT, session=session)
+    with pytest.raises(TDnetClientError, match="500 Server Error"):
+        client.fetch_recent()
 
 
 def test_throttle_sleeps_for_remaining_interval():

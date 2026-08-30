@@ -5,6 +5,7 @@ from __future__ import annotations
 from stock_radar.collectors.repository import (
     CASE_STUDY_TICKERS,
     dataset_tag_for_ticker,
+    disclosure_exists,
     get_available_price_asof,
     is_intraday_disclosure,
     save_disclosure,
@@ -154,3 +155,26 @@ def test_get_available_price_asof_never_returns_pts_reference_rows(empty_conn):
     save_price_bars(conn, [pts_bar])
     row = get_available_price_asof(conn, "4840", "2026-08-20T16:00:00+09:00")
     assert row is None
+
+
+def test_disclosure_exists_false_before_saving(empty_conn):
+    conn = empty_conn
+    _insert_company(conn, "4840")
+    disclosure = _sample_disclosure("4840")
+    assert disclosure_exists(conn, disclosure.ticker, disclosure.title, disclosure.disclosed_at) is False
+
+
+def test_disclosure_exists_true_after_saving(empty_conn):
+    conn = empty_conn
+    _insert_company(conn, "4840")
+    disclosure = _sample_disclosure("4840")
+    save_disclosure(conn, disclosure)
+    assert disclosure_exists(conn, disclosure.ticker, disclosure.title, disclosure.disclosed_at) is True
+
+
+def test_disclosure_exists_distinguishes_different_disclosed_at(empty_conn):
+    conn = empty_conn
+    _insert_company(conn, "4840")
+    disclosure = _sample_disclosure("4840")
+    save_disclosure(conn, disclosure)
+    assert disclosure_exists(conn, disclosure.ticker, disclosure.title, "2026-08-21T15:00:00+09:00") is False

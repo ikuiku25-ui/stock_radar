@@ -3,7 +3,7 @@
 日本株の適時開示（TDnet）を分析し、材料・需給・テーマの観点でランキングする個人用ツール。
 仕様は [`docs/implementation_spec_v1.3.md`](docs/implementation_spec_v1.3.md) を参照（Phase制で段階実装、各Phase完了後にユーザー承認を得て次に進む）。
 
-## 現在のステータス: Phase 6（バックテスト）
+## 現在のステータス: Phase 7（実運用）
 
 ### Phase 1（SQLite + モックデータ + テスト基盤）
 
@@ -131,6 +131,32 @@ Phase 2/4で収集・スコアリング済みの実データ（`data/stock_radar
 ```bash
 python3 scripts/record_outcomes.py --db-path data/stock_radar.db3
 python3 scripts/backtest_report.py --db-path data/stock_radar.db3
+```
+
+### Phase 7（実運用）
+
+- `src/stock_radar/pipeline/runner.py`: 収集（TDnetの`fetch_recent()`で**全銘柄**を対象、4銘柄限定だったPhase 2の一括取得スクリプトとは異なる）→ 新規銘柄の株価取得 → 未分類の開示のみ分類 → 未スコアの開示のみスコアリング → S/A通知 → 未記録のoutcome記録、という日次パイプライン全体を1回実行する。各ステージは独立した例外処理を持ち、**1ステージの失敗が他のステージやプロセス全体をクラッシュさせない**設計（仕様書§12 Phase 7「エラー監視」）。
+- `src/stock_radar/pipeline/logging_config.py`: ログをコンソールとローテーションするログファイル（`logs/stock_radar.log`）の両方に出力。cron等のスケジューラは標準出力を捨てることが多いため、ファイルへの記録が必須。
+- `scripts/run_pipeline.py`: 1日1回、OS側のスケジューラ（後述）から呼び出すエントリポイント。失敗時は終了コード1を返し、`--alert-on-error`で失敗自体を通知（デスクトップ/メール）で知らせることも可能。
+
+**このPhaseの実装中に見つけた重要な修正（本番投入前に直せてよかったもの）**:
+1. **`score_disclosures.py`のクラッシュ**: Phase 6でoutcome_trackingへの記録を始めた後にPhase 4のスクリプトを再実行すると、外部キー制約違反でクラッシュする不具合を発見・修正。一度結果が記録された（＝バックテストの実績として確定した）スコアは、以後上書きしない設計に変更（`backtest.repository.delete_rescoreable_scores_for_weight_set`）。
+2. **TDnetのネットワーク障害でクラッシュ**: `TDnetClient`がJSONパースエラーだけを例外として捕捉しており、接続エラー・タイムアウト・プロキシエラー等が生の例外のまま伝播してパイプライン全体を止めてしまう不具合を発見・修正（このサンドボックス環境でのネットワーク遮断を利用して実際に再現・確認済み）。
+3. **開示の重複投入防止**: 日次実行では`fetch_recent()`の取得範囲が前回と重複するため、`(ticker, title, disclosed_at)`をキーに既存判定を行うガードを追加。
+4. **分類・スコアリングの差分実行化**: Phase 3/4のスクリプトは「毎回全件再処理」だったが、日次自動実行でこれをやるとバックテスト確定済みの記録を壊しかねないため、Phase 7のパイプラインでは「未処理のものだけ」処理する設計に変更（辞書修正後の全件再処理は引き続き手動でPhase 3/4のスクリプトを使う）。
+
+**スケジューラ設定（Mac: launchd or cron）**:
+
+cronの場合（`crontab -e`で編集、平日16:00 JSTに実行する例）:
+```
+0 16 * * 1-5 cd /path/to/stock_radar && /path/to/venv/bin/python3 scripts/run_pipeline.py --db-path data/stock_radar.db3 --method desktop --alert-on-error >> logs/cron.log 2>&1
+```
+
+**要実施**: 実際にスケジューラへ登録し、数営業日にわたって正常に動作する（クラッシュしない）ことを確認してください（仕様書§12 Phase 7の完了条件）。`logs/stock_radar.log`でエラーが出ていないか、`data/stock_radar.db3`の`disclosures`/`scores`が日々増えているかを確認する運用になります。この確認には実際の日数経過が必要なため、このセッション内では完了できません。
+
+```bash
+# 手動での動作確認（実際のTDnet/yfinanceへの接続が必要）
+python3 scripts/run_pipeline.py --db-path data/stock_radar.db3 --method desktop
 ```
 
 ### セットアップ

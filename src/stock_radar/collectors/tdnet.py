@@ -111,8 +111,17 @@ class TDnetClient:
     def _fetch_payload(self, url: str, limit: int) -> tuple[dict, datetime]:
         self._throttle()
         fetched_at_dt = self._clock()
-        response = self._session.get(url, params={"limit": limit}, timeout=self._timeout_seconds)
-        response.raise_for_status()
+        try:
+            response = self._session.get(url, params={"limit": limit}, timeout=self._timeout_seconds)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as exc:
+            # Covers connection failures, timeouts, proxy errors, and
+            # raise_for_status()'s HTTPError — anything network-level, not
+            # just a bad response body. Phase 7's daily pipeline treats any
+            # single stage's failure as recoverable (log and move on), so
+            # this MUST surface as TDnetClientError rather than letting a
+            # raw requests exception propagate and crash the whole run.
+            raise TDnetClientError(f"Request to {url} failed: {exc}") from exc
         try:
             payload = response.json()
         except ValueError as exc:
