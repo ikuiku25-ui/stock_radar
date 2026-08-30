@@ -3,7 +3,7 @@
 日本株の適時開示（TDnet）を分析し、材料・需給・テーマの観点でランキングする個人用ツール。
 仕様は [`docs/implementation_spec_v1.3.md`](docs/implementation_spec_v1.3.md) を参照（Phase制で段階実装、各Phase完了後にユーザー承認を得て次に進む）。
 
-## 現在のステータス: Phase 5（通知）
+## 現在のステータス: Phase 6（バックテスト）
 
 ### Phase 1（SQLite + モックデータ + テスト基盤）
 
@@ -114,6 +114,24 @@ python3 scripts/notify_watchlist.py --db-path data/stock_radar_mock.db3 --method
 ```
 
 Phase 2/4で収集・スコアリング済みの実データ（`data/stock_radar.db3`）に対して実行し、通知が正しいタイミング・内容で届くか確認してください。既にwatchlistに入っている銘柄（4840, 7743など）は再通知されません。
+
+### Phase 6（バックテスト）
+
+- `src/stock_radar/backtest/price_limit.py`: 東証の値幅制限表（ストップ高判定用）。**このサンドボックス環境ではオンラインで最新の正確な表を確認できないため、一般知識ベースの表を実装し「要検証」と明記**（ファイル冒頭のVERIFICATION NOTICE参照）。間違っていてもこのファイルだけ直せばよい設計。
+- `src/stock_radar/backtest/outcome.py`: 翌営業日の始値・高値・安値・終値からギャップアップ率・最大上昇率・最大下落率・+5%/+10%到達・ストップ高到達を計算（仕様書§10.1）。
+- `src/stock_radar/backtest/recorder.py` / `repository.py`: `outcome_tracking`への保存。スコアリングとは**別モジュール・別実行タイミング**（仕様書§10.2）。価格データはPhase 2の`get_available_price_asof()`で開示当日の確定終値を基準とし、「翌営業日」はその次の確定`close`足。
+- `src/stock_radar/backtest/report.py`: 仕様書§9のスコア帯別集計クエリをほぼそのまま実装。**`dataset_tag='statistical'`のみを対象とし、4銘柄のケーススタディは常に除外**（仕様書§10.3、明示的なデバッグ用フラグを渡さない限り混入できない設計）。`availability_confidence`によるHIGH_ONLY/HIGH_MEDIUMモード切り替えにも対応。
+- `scripts/record_outcomes.py`: 未記録のスコアについて`outcome_tracking`を記録（再実行安全、記録済み・データ不足は自動スキップ）。
+- `scripts/backtest_report.py`: スコア帯別実績レポートを出力（仕様書§12 Phase 6の完了条件）。
+
+**§10.2の物理的分離を自動テストで担保**: `tests/test_backtest_separation.py`が、`classification`/`scoring`/`collectors`/`db`配下のソースコードが`outcome_tracking`という文字列を一切含まないことを機械的に検証（仕様書が求める「コードレビュー時のチェック項目」を自動化）。
+
+**重要な制約**: 現在収集済みの実データは4銘柄とも`dataset_tag='case_study'`のみで、`'statistical'`データは1件も存在しません。そのため`backtest_report.py`を今実行しても**空のレポートになるのが正しい動作**です（仕様書§10.3が要求する分離が働いている証拠）。統計的に意味のあるレポートを得るには、Phase 7（実運用）で`'statistical'`銘柄群のデータを継続的に収集していく必要があります。動作確認は、モックデータに`--include-case-study-for-debugging-only`を付けて行いました（結果は統計的結論には使えません）。
+
+```bash
+python3 scripts/record_outcomes.py --db-path data/stock_radar.db3
+python3 scripts/backtest_report.py --db-path data/stock_radar.db3
+```
 
 ### セットアップ
 
