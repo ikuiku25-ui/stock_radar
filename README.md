@@ -105,6 +105,14 @@ python3 scripts/notify_watchlist.py --db-path data/stock_radar.db3 --method desk
 python3 scripts/notify_watchlist.py --db-path data/stock_radar.db3 --method email
 ```
 
+**動作確認済み**: ユーザーのMac実機でデスクトップ通知バナーの表示を確認済み。なお実データ（`data/stock_radar.db3`）はPhase 4の結果（S:0/A:0/B:1/none:79）によりS/Aランクが存在しないため、確認にはPhase 1のモックデータ（4840=S、7743=A）を使用した。
+
+```bash
+python3 scripts/seed_mock_data.py --db-path data/stock_radar_mock.db3 --force
+python3 -c "import sqlite3; c=sqlite3.connect('data/stock_radar_mock.db3'); c.execute('DELETE FROM watchlist'); c.commit()"
+python3 scripts/notify_watchlist.py --db-path data/stock_radar_mock.db3 --method desktop
+```
+
 Phase 2/4で収集・スコアリング済みの実データ（`data/stock_radar.db3`）に対して実行し、通知が正しいタイミング・内容で届くか確認してください。既にwatchlistに入っている銘柄（4840, 7743など）は再通知されません。
 
 ### セットアップ
