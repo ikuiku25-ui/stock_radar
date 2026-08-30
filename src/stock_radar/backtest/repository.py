@@ -19,6 +19,22 @@ def has_outcome(conn: sqlite3.Connection, score_id: int) -> bool:
     return conn.execute("SELECT 1 FROM outcome_tracking WHERE score_id = ?", (score_id,)).fetchone() is not None
 
 
+def delete_rescoreable_scores_for_weight_set(conn: sqlite3.Connection, weight_set_id: int) -> None:
+    """Deletes a weight_set's scores EXCEPT any that already have an
+    outcome_tracking row. Once an outcome is recorded, that score is a
+    closed backtest record — retroactively recomputing it after its
+    real-world result is known would be look-ahead bias into the backtest
+    itself (and outcome_tracking.score_id's UNIQUE+FK, Phase 0, would
+    reject the DELETE anyway). This is the backtest-integrity-aware
+    counterpart to scoring.repository.delete_scores_for_weight_set(), which
+    deliberately knows nothing about outcome_tracking (spec §10.2)."""
+    conn.execute(
+        "DELETE FROM scores WHERE weight_set_id = ? "
+        "AND score_id NOT IN (SELECT score_id FROM outcome_tracking)",
+        (weight_set_id,),
+    )
+
+
 def get_next_trading_day_bar(
     conn: sqlite3.Connection, ticker: str, after_trade_date: str
 ) -> Optional[sqlite3.Row]:
