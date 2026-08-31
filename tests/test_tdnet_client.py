@@ -93,6 +93,25 @@ def test_parses_five_digit_company_code_to_four_digit_ticker():
     assert disclosures[0].ticker == "7203"
 
 
+def test_parses_alphanumeric_jpx_ticker_code():
+    """Regression: a real Phase 7 production run against ALL tickers
+    (not just the 4 case-study ones) hit dozens of JPX's newer
+    alphanumeric ticker codes (introduced 2024) reported the same way as
+    numeric codes — 5 characters with a trailing suffix (e.g. '149A0' for
+    ticker '149A') — which the numeric-only isdigit() check let through
+    unstripped, producing an invalid 5-character ticker yfinance could
+    never resolve ('149A0.T': No data found)."""
+    client = _make_client(_sample_payload(company_code="149A0"), DISCLOSED_AT + timedelta(seconds=5))
+    disclosures = client.fetch_recent(limit=10)
+    assert disclosures[0].ticker == "149A"
+
+
+def test_parses_alphanumeric_jpx_ticker_with_nonzero_suffix():
+    client = _make_client(_sample_payload(company_code="585A4"), DISCLOSED_AT + timedelta(seconds=5))
+    disclosures = client.fetch_recent(limit=10)
+    assert disclosures[0].ticker == "585A"
+
+
 def test_fetch_by_ticker_builds_expected_url():
     session = FakeSession(_sample_payload())
     client = _make_client(_sample_payload(), DISCLOSED_AT, session=session)

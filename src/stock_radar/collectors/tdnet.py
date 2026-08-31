@@ -179,12 +179,19 @@ class TDnetClient:
 
 
 def _normalize_ticker(company_code: str) -> str:
-    """The API reports a 5-digit code (4-digit ticker + check digit, e.g.
-    '72030' for ticker '7203' — confirmed against a live response). Falls
-    back to the raw value if it doesn't match that shape (e.g. a 4-character
-    alphanumeric code under JPX's newer ticker format)."""
+    """The API reports a 5-character code (4-character ticker + a trailing
+    suffix digit, e.g. '72030' for ticker '7203' — confirmed against a live
+    response). JPX's newer alphanumeric ticker format (introduced 2024,
+    e.g. '149A') still gets reported as 5 characters with the same
+    trailing suffix (e.g. '149A0') — this was originally only stripped
+    when the whole code was numeric, which left alphanumeric tickers'
+    trailing digit attached (yielding an invalid 5-character "ticker" like
+    '149A0' that yfinance can never resolve). Confirmed via a real
+    production run (Phase 7) that repeatedly failed to price dozens of
+    such tickers before this fix. Falls back to the raw value for any
+    other length."""
     code = (company_code or "").strip()
-    if len(code) == 5 and code.isdigit():
+    if len(code) == 5:
         return code[:4]
     return code
 
