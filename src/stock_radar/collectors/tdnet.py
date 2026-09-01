@@ -1,0 +1,232 @@
+"""TDnet disclosure collector (spec §4, §8.1, §13 rule 5).
+
+RISK / UNCERTAINTY NOTICE (do not remove — spec's 補足 flags this as
+"要確認... 実装着手時に再確認必須"):
+  This client talks to an UNOFFICIAL, personally-run JSON API that mirrors
+  TDnet ("TDnet WEB-API（非公式）by Yanoshin", webapi.yanoshin.jp — the
+  class of service the spec calls "個人運営の非公式TDnet API"). It is NOT
+  the official JPX/TDnet service. Before relying on this in a real run:
+    1. Verify the service is still online and its terms still allow this
+       use (personal, non-commercial, considerate request volume).
+    2. This is a single point of failure: the service can disappear
+       without notice (spec §4.1). Do not assume availability.
+
+  URL construction (list/(condition).(format)?limit=N) and the response
+  field names below (pubdate as 'YYYY-MM-DD HH:MM:SS' JST, company_code as
+  a 5-digit ticker+check-digit) were confirmed against a live response
+  during Phase 2 development — see fetch_raw_by_ticker()/--raw on
+  scripts/tdnet_connectivity_probe.py if the service's shape ever changes.
+
+  A minimum polling interval is enforced (see min_interval_seconds) per
+  spec §13 rule 5 ("Interval設定を必ず組み込むこと") to avoid hammering a
+  free, personally-run service.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Callable, Optional
+
+import requests
+
+JST = timezone(timedelta(hours=9))
+
+DEFAULT_BASE_URL = "https://webapi.yanoshin.jp/webapi/tdnet/list"
+# Conservative default: real-time detection only needs to beat "next
+# business day", not sub-minute latency, so err toward less server load.
+DEFAULT_MIN_INTERVAL_SECONDS = 30.0
+DEFAULT_TIMEOUT_SECONDS = 15.0
+
+
+@dataclass
+class RawDisclosure:
+    """One disclosure as collected, before material classification (Phase 3)."""
+
+    ticker: str
+    company_name: str
+    title: str
+    pdf_url: Optional[str]
+    disclosed_at: str  # ISO8601, JST — from the API's pubdate field
+    fetched_at: str  # ISO8601, JST — when this HTTP request was made
+    system_available_at: str  # ISO8601, JST — when our poller observed it (== fetched_at here)
+    availability_confidence: str  # HIGH/MEDIUM/LOW/UNKNOWN
+
+
+class TDnetClientError(RuntimeError):
+    """Raised when the unofficial API returns an unexpected shape."""
+
+
+class TDnetClient:
+    def __init__(
+        self,
+        base_url: str = DEFAULT_BASE_URL,
+        min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        session: Optional[requests.Session] = None,
+        sleep_fn: Callable[[float], None] = time.sleep,
+        clock: Callable[[], datetime] = lambda: datetime.now(JST),
+        monotonic_fn: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._min_interval_seconds = min_interval_seconds
+        self._timeout_seconds = timeout_seconds
+        self._session = session or requests.Session()
+        self._sleep_fn = sleep_fn
+        self._clock = clock
+        self._monotonic_fn = monotonic_fn
+        self._last_request_at: Optional[float] = None
+
+    def fetch_recent(self, limit: int = 100) -> list[RawDisclosure]:
+        """Fetch the most recent disclosures across all tickers."""
+        return self._fetch(f"{self._base_url}/recent.json", limit=limit)
+
+    def fetch_by_ticker(self, ticker: str, limit: int = 100) -> list[RawDisclosure]:
+        """Fetch recent disclosures for a single ticker code."""
+        return self._fetch(f"{self._base_url}/{ticker}.json", limit=limit)
+
+    def fetch_by_tickers(self, tickers: list[str], limit: int = 100) -> list[RawDisclosure]:
+        """Fetch recent disclosures for multiple ticker codes in ONE request
+        (the API's documented '-'-joined condition, e.g. '7203-130A-9984').
+        Prefer this over calling fetch_by_ticker in a loop when polling a
+        fixed set of tickers — it's one HTTP round trip instead of N,
+        which is the more considerate way to use a free, personally-run
+        service (spec §13 rule 5)."""
+        condition = "-".join(tickers)
+        return self._fetch(f"{self._base_url}/{condition}.json", limit=limit)
+
+    def fetch_raw_by_ticker(self, ticker: str, limit: int = 100) -> dict:
+        """Fetch the raw JSON payload for a ticker with NO per-record
+        parsing applied. Use this to verify the live API's actual field
+        names/shapes (see module docstring) before trusting _parse_record.
+        """
+        payload, _ = self._fetch_payload(f"{self._base_url}/{ticker}.json", limit)
+        return payload
+
+    def _fetch(self, url: str, limit: int) -> list[RawDisclosure]:
+        payload, fetched_at_dt = self._fetch_payload(url, limit)
+        return self._parse_items(payload, fetched_at_dt)
+
+    def _fetch_payload(self, url: str, limit: int) -> tuple[dict, datetime]:
+        self._throttle()
+        fetched_at_dt = self._clock()
+        try:
+            response = self._session.get(url, params={"limit": limit}, timeout=self._timeout_seconds)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as exc:
+            # Covers connection failures, timeouts, proxy errors, and
+            # raise_for_status()'s HTTPError — anything network-level, not
+            # just a bad response body. Phase 7's daily pipeline treats any
+            # single stage's failure as recoverable (log and move on), so
+            # this MUST surface as TDnetClientError rather than letting a
+            # raw requests exception propagate and crash the whole run.
+            raise TDnetClientError(f"Request to {url} failed: {exc}") from exc
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            # requests.exceptions.JSONDecodeError subclasses ValueError;
+            # catching the parent keeps this independent of the JSON
+            # backend requests uses under the hood.
+            snippet = response.text[:500]
+            raise TDnetClientError(
+                f"Non-JSON response from {getattr(response, 'url', url)} "
+                f"(HTTP {response.status_code}, content-type "
+                f"{response.headers.get('Content-Type')!r}): {snippet!r}"
+            ) from exc
+        return payload, fetched_at_dt
+
+    def _throttle(self) -> None:
+        """Enforce min_interval_seconds between successive HTTP requests."""
+        now = self._monotonic_fn()
+        if self._last_request_at is not None:
+            elapsed = now - self._last_request_at
+            remaining = self._min_interval_seconds - elapsed
+            if remaining > 0:
+                self._sleep_fn(remaining)
+        self._last_request_at = now
+
+    def _parse_items(self, payload, fetched_at_dt: datetime) -> list[RawDisclosure]:
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if items is None:
+            shape = list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__
+            raise TDnetClientError(f"Unexpected TDnet API response shape: {shape}")
+
+        fetched_at_iso = fetched_at_dt.isoformat()
+        disclosures = []
+        for entry in items:
+            record = entry.get("Tdnet") if isinstance(entry, dict) else None
+            if record is None:
+                continue
+            disclosures.append(self._parse_record(record, fetched_at_dt, fetched_at_iso))
+        return disclosures
+
+    def _parse_record(self, record: dict, fetched_at_dt: datetime, fetched_at_iso: str) -> RawDisclosure:
+        ticker = _normalize_ticker(record.get("company_code", ""))
+        disclosed_at_dt = _parse_pubdate(record.get("pubdate"))
+        disclosed_at_iso = disclosed_at_dt.isoformat() if disclosed_at_dt else fetched_at_iso
+        confidence = _estimate_confidence(disclosed_at_dt, fetched_at_dt, self._min_interval_seconds)
+        return RawDisclosure(
+            ticker=ticker,
+            company_name=record.get("company_name", ""),
+            title=record.get("title", ""),
+            pdf_url=record.get("document_url") or None,
+            disclosed_at=disclosed_at_iso,
+            fetched_at=fetched_at_iso,
+            system_available_at=fetched_at_iso,
+            availability_confidence=confidence,
+        )
+
+
+def _normalize_ticker(company_code: str) -> str:
+    """The API reports a 5-character code (4-character ticker + a trailing
+    suffix digit, e.g. '72030' for ticker '7203' — confirmed against a live
+    response). JPX's newer alphanumeric ticker format (introduced 2024,
+    e.g. '149A') still gets reported as 5 characters with the same
+    trailing suffix (e.g. '149A0') — this was originally only stripped
+    when the whole code was numeric, which left alphanumeric tickers'
+    trailing digit attached (yielding an invalid 5-character "ticker" like
+    '149A0' that yfinance can never resolve). Confirmed via a real
+    production run (Phase 7) that repeatedly failed to price dozens of
+    such tickers before this fix. Falls back to the raw value for any
+    other length."""
+    code = (company_code or "").strip()
+    if len(code) == 5:
+        return code[:4]
+    return code
+
+
+PUBDATE_FORMAT = "%Y-%m-%d %H:%M:%S"  # e.g. '2026-08-07 15:30:00', confirmed live — no tz offset, implicitly JST
+
+
+def _parse_pubdate(pubdate: Optional[str]) -> Optional[datetime]:
+    if not pubdate:
+        return None
+    try:
+        parsed = datetime.strptime(pubdate, PUBDATE_FORMAT)
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=JST)
+
+
+def _estimate_confidence(
+    disclosed_at_dt: Optional[datetime], fetched_at_dt: datetime, min_interval_seconds: float
+) -> str:
+    """Heuristic for availability_confidence (spec §3.1/§8.1 define the enum
+    but not how to derive it — this is a Phase 2 design decision): confidence
+    that system_available_at faithfully reflects "when this became knowable"
+    degrades as the observed poll lag (fetch time minus disclosed time)
+    grows. A negative lag (fetched "before" the reported disclosure time)
+    signals clock skew or a stale cache and is treated as UNKNOWN rather
+    than trusted.
+    """
+    if disclosed_at_dt is None:
+        return "UNKNOWN"
+    lag_seconds = (fetched_at_dt - disclosed_at_dt).total_seconds()
+    if lag_seconds < 0:
+        return "UNKNOWN"
+    if lag_seconds <= max(min_interval_seconds * 3, 60):
+        return "HIGH"
+    if lag_seconds <= 3600:
+        return "MEDIUM"
+    return "LOW"

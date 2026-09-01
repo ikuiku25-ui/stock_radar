@@ -1,1 +1,214 @@
 # stock_radar
+
+日本株の適時開示（TDnet）を分析し、材料・需給・テーマの観点でランキングする個人用ツール。
+仕様は [`docs/implementation_spec_v1.3.md`](docs/implementation_spec_v1.3.md) を参照（Phase制で段階実装、各Phase完了後にユーザー承認を得て次に進む）。
+
+## 現在のステータス: Phase 7（実運用）
+
+### Phase 1（SQLite + モックデータ + テスト基盤）
+
+- `src/stock_radar/db/schema.sql`: DDL（仕様書§6.1 + Phase 0で承認した整合性用CHECK/UNIQUE制約3件、詳細はファイル冒頭コメント参照）
+- `src/stock_radar/db/connection.py`: DB接続・初期化
+- `src/stock_radar/mock_data.py`: 4銘柄（4840, 7743, 3987, 3907）のケーススタディ用モックデータ（`dataset_tag='case_study'`）
+- `scripts/seed_mock_data.py`: モックデータ入りDBファイルを作成するCLI
+
+### Phase 2（TDnet取得・yfinance連携）
+
+- `src/stock_radar/collectors/tdnet.py`: TDnet適時開示の収集クライアント。**非公式の個人運営API**「TDnet WEB-API（非公式）by Yanoshin」(https://webapi.yanoshin.jp/webapi/tdnet/) を利用（仕様書§4.1で「0円だが規約・安定性のグレーゾーン」と明記された手段）。URL形式・`pubdate`日付形式・`company_code`の5桁形式は、いずれも実サービスへの疎通確認で確認・修正済み（当初の推測とは異なっていた）。Interval設定（デフォルト30秒間隔）を組み込み済み。
+- `src/stock_radar/collectors/yfinance_client.py`: yfinance経由の日足OHLCV取得。`avg_volume_20d`は当日を含まない過去20営業日平均として計算（Look-ahead bias対策、§6.2/§8.2）。
+- `src/stock_radar/collectors/repository.py`: 収集結果のDB保存＋`get_available_price_asof()` — 場中開示（15:00より前）が当日未確定データを参照できないようにする、§8.2のLook-ahead bias防止ロジックの唯一の入口。
+- `scripts/tdnet_connectivity_probe.py` / `scripts/yfinance_connectivity_probe.py`: 実サービスへの1銘柄疎通テスト用CLI。
+- `scripts/collect_case_study_data.py`: 4銘柄分の実データを3時刻モデル込みでDBに保存する（Phase 2完了条件）。
+
+**重要**: このサンドボックス環境はネットワークポリシーによりTDnet/Yahoo Financeへの外部アクセスがブロックされているため、実際の疎通テストは実行できていません。単体テストは全てHTTPをモックして検証済みです。実際の疎通確認・4銘柄データ収集は、**ネットワークアクセス可能なローカルPC等で**以下を実行してください。
+
+```bash
+pip install -r requirements.txt
+python3 scripts/tdnet_connectivity_probe.py --ticker 7203 --limit 5
+python3 scripts/yfinance_connectivity_probe.py --ticker 7203 --period 5d
+# 上記で応答形式に問題がなければ:
+python3 scripts/collect_case_study_data.py --db-path data/stock_radar.db3
+```
+
+**Phase 2は実データでの動作確認済み**（4銘柄分の開示・株価データを3時刻モデル込みでDB保存できることを確認済み）。
+
+### Phase 3（材料分類）
+
+- `src/stock_radar/classification/keywords.py`: カテゴリA〜G（上方修正/増配/自社株買い/大型受注・契約/M&A・資本業務提携/新製品・特許・承認/株式分割）＋HARD_BLOCK（民事再生・上場廃止等、存続性リスクのみ）＋SOFT_NEGATIVE（下方修正・減損等、ポジティブと共存）のキーワード辞書。**v1.2の実辞書は現存せず、v1.3仕様書にも本体が含まれていなかったため新規設計**（詳細はファイル冒頭のPROVENANCE NOTICE参照）。
+- `src/stock_radar/classification/classifier.py`: `classify_disclosure(title, raw_text)` — NFKC正規化後にキーワード辞書と照合し、`category`/`positive_material_raw`/`negative_penalty_raw`/`is_hard_block`を算出。HARD_BLOCKによるスコアのゼロ化はここでは行わない（disclosuresの生の値はそのまま記録し、ゼロ化はPhase 4のスコアリング時に適用、仕様書§8.3）。
+- `src/stock_radar/classification/repository.py`: 分類結果を`disclosures`テーブルに書き戻す。
+- `scripts/classify_disclosures.py`: DB内の全開示を分類（辞書修正後の再実行にも対応、毎回全件再分類）。
+- `scripts/review_classifications.py`: 開示タイトルと分類結果を並べて表示する手動レビュー用CLI。
+
+**実データでの手動精度確認は実施済み**（仕様書§12 Phase 3の完了条件）。実際の4銘柄・80件の開示に対して分類を実行し、レビューの結果、以下を修正:
+- 誤検出: 「受注損失引当金繰入額の計上」（悪材料）が「受注」に一致し誤って好材料判定されていた問題を修正
+- 重大な見逃し: 実際のTOB（公開買付け）開示が辞書の表記違いで検出できていなかった問題を修正
+- その他、特別利益の発生・自己株式消却・株式取得（M&A文脈）・事業譲受・会社分割・戦略的提携のキーワードを追加
+
+**既知の限界**（ユーザー承認済み、対応は先送り）: `raw_text`は現状タイトルのみ（Phase 2でPDF本文抽出を先送りしたため）。「業績予想の修正に関するお知らせ」のように、本文を見なければ上方/下方が判別できないタイトルは分類不能（実データ80件中約5件に影響）。`keywords.py`冒頭のKNOWN LIMITATIONコメント参照。
+
+```bash
+python3 scripts/classify_disclosures.py --db-path data/stock_radar.db3
+python3 scripts/review_classifications.py --db-path data/stock_radar.db3
+```
+
+### Phase 4（スコアリング）
+
+- `src/stock_radar/scoring/material.py`: `material_score = 0 if HARD_BLOCK else min(weight_material, max(0, positive+negative))`（仕様書§8.3の式そのまま＋weight_materialでの上限キャップ）。
+- `src/stock_radar/scoring/supply_demand.py`: `volume_ratio`（開示日を含まない過去20営業日平均が分母、Phase 2で計算済みの`avg_volume_20d`をそのまま利用）に応じた加点＋小型株ボーナス。**両方とも仕様書に具体的な数値がないため、このプロジェクト独自の仮説として設計**（ファイル冒頭のHYPOTHESIS NOTICE参照、Phase 6のバックテストで検証・調整する前提）。
+- `src/stock_radar/scoring/theme.py`: `theme_keywords`と照合し、該当テーマがその日「アツい」（`theme_hot_status.hot_flag`）かで加点。場中開示は前営業日のhot_flagを参照するLook-ahead bias対策込み。**`theme_hot_status`を実際に埋めるパイプライン（値上がり率ランキング等）はまだ存在しないため、実データでは現状ほぼ常に0点**。
+- `src/stock_radar/scoring/rank.py`: `total_score`（0〜100）からS/A/B/noneを判定。**閾値（S:80以上/A:60以上/B:40以上）も仕様書に記載がないため独自の仮説**。
+- `src/stock_radar/scoring/scorer.py`: 上記を統合するオーケストレーター。価格データは必ず`get_available_price_asof()`経由で取得し、Look-ahead bias防止を徹底。
+- `src/stock_radar/scoring/weight_sets.py`: ベースライン`weight_set`（50/30/20、ウォークフォワード期間なし）を用意。
+- `scripts/score_disclosures.py`: DB内の全開示をスコアリング（再実行時は対象weight_setの既存スコアを削除してから再投入、安全に再実行可能）。
+- `scripts/review_scores.py`: 開示タイトルと材料/需給/テーマ/合計スコア・ランクを並べて表示する手動レビュー用CLI。
+
+**実データでの手動確認は実施済み**（仕様書§12 Phase 4の完了条件）。実際の4銘柄・80件でスコアリングした結果、S/Aランクはほぼ出ず、Bランクも1件のみとなった。原因を`--show-volume-ratio`で調査したところ、バグではなく設計通りの挙動と判明:
+- 実際のTOB開示（7743）で`volume_ratio=0.73`（平常並み）を確認 — 大引け後開示の場合、「開示日の確定出来高」（仕様書§6.2の定義通り）は開示**前**の出来高であり、開示への市場反応を捉える指標ではない
+- テーマスコアは既知のギャップにより実質常時0点
+
+この2点により実質的な到達点が下がり、S/Aがほぼ出ないのは想定内という結論に至った。**ユーザーの判断で閾値の調整は行わず、現状の仮説のまま維持**し、Phase 6のバックテストで実際に検証する方針とした（詳細は`scoring/rank.py`のREAL-DATA FINDING参照）。
+
+```bash
+python3 scripts/score_disclosures.py --db-path data/stock_radar.db3
+python3 scripts/review_scores.py --db-path data/stock_radar.db3 --show-volume-ratio
+```
+
+### Phase 5（通知）
+
+- `src/stock_radar/notification/message.py`: 通知本文を組み立てる。仕様書§11・§13ルール6に従い、**銘柄コード・会社名・検知した材料・SBIで確認すべき項目の「名前」のみ**を含み、証券会社の実際の値（現在値等）は一切含まない（自動取得しないため）。
+- `src/stock_radar/notification/desktop.py`: デスクトップ通知。**現状macOSのみ対応**（`osascript`、追加インストール不要）。ユーザーの実行環境がMacのため、まずこちらを実装。仕様書が元々想定していたWindows環境向けの実装は未着手（必要になれば追加）。
+- `src/stock_radar/notification/email_notifier.py`: メール通知（標準ライブラリ`smtplib`のみ、追加依存なし）。SMTP認証情報は環境変数から読み込み、**コードやDBに一切保存しない**。
+- `src/stock_radar/notification/service.py`: S/Aランクのみ通知（仕様書§5）。`watchlist`テーブルへの登録が「通知済み」の記録を兼ねる設計 — 全通知手段が失敗した場合はwatchlistに登録せず、次回実行時に再試行される。
+- `scripts/notify_watchlist.py`: 手動トリガー用CLI（仕様書§12 Phase 5の完了条件）。`--dry-run`で送信せず内容確認のみ可能。
+
+**メール通知を使う場合**、以下の環境変数を設定してください（Gmailの場合は通常のパスワードではなく「アプリパスワード」が必要）:
+
+```bash
+export STOCK_RADAR_SMTP_HOST=smtp.gmail.com
+export STOCK_RADAR_SMTP_PORT=587
+export STOCK_RADAR_SMTP_USER=your_address@gmail.com
+export STOCK_RADAR_SMTP_PASSWORD=your_app_password
+export STOCK_RADAR_NOTIFY_EMAIL_TO=your_address@gmail.com
+```
+
+**動作確認**（仕様書§12 Phase 5の完了条件: 手動トリガーで通知確認）:
+
+```bash
+# まず内容だけ確認（送信しない）
+python3 scripts/notify_watchlist.py --db-path data/stock_radar.db3 --dry-run
+
+# デスクトップ通知で送信（Mac）
+python3 scripts/notify_watchlist.py --db-path data/stock_radar.db3 --method desktop
+
+# メールで送信（環境変数の設定が必要）
+python3 scripts/notify_watchlist.py --db-path data/stock_radar.db3 --method email
+```
+
+**動作確認済み**: ユーザーのMac実機でデスクトップ通知バナーの表示を確認済み。なお実データ（`data/stock_radar.db3`）はPhase 4の結果（S:0/A:0/B:1/none:79）によりS/Aランクが存在しないため、確認にはPhase 1のモックデータ（4840=S、7743=A）を使用した。
+
+```bash
+python3 scripts/seed_mock_data.py --db-path data/stock_radar_mock.db3 --force
+python3 -c "import sqlite3; c=sqlite3.connect('data/stock_radar_mock.db3'); c.execute('DELETE FROM watchlist'); c.commit()"
+python3 scripts/notify_watchlist.py --db-path data/stock_radar_mock.db3 --method desktop
+```
+
+Phase 2/4で収集・スコアリング済みの実データ（`data/stock_radar.db3`）に対して実行し、通知が正しいタイミング・内容で届くか確認してください。既にwatchlistに入っている銘柄（4840, 7743など）は再通知されません。
+
+### Phase 6（バックテスト）
+
+- `src/stock_radar/backtest/price_limit.py`: 東証の値幅制限表（ストップ高判定用）。**このサンドボックス環境ではオンラインで最新の正確な表を確認できないため、一般知識ベースの表を実装し「要検証」と明記**（ファイル冒頭のVERIFICATION NOTICE参照）。間違っていてもこのファイルだけ直せばよい設計。
+- `src/stock_radar/backtest/outcome.py`: 翌営業日の始値・高値・安値・終値からギャップアップ率・最大上昇率・最大下落率・+5%/+10%到達・ストップ高到達を計算（仕様書§10.1）。
+- `src/stock_radar/backtest/recorder.py` / `repository.py`: `outcome_tracking`への保存。スコアリングとは**別モジュール・別実行タイミング**（仕様書§10.2）。価格データはPhase 2の`get_available_price_asof()`で開示当日の確定終値を基準とし、「翌営業日」はその次の確定`close`足。
+- `src/stock_radar/backtest/report.py`: 仕様書§9のスコア帯別集計クエリをほぼそのまま実装。**`dataset_tag='statistical'`のみを対象とし、4銘柄のケーススタディは常に除外**（仕様書§10.3、明示的なデバッグ用フラグを渡さない限り混入できない設計）。`availability_confidence`によるHIGH_ONLY/HIGH_MEDIUMモード切り替えにも対応。
+- `scripts/record_outcomes.py`: 未記録のスコアについて`outcome_tracking`を記録（再実行安全、記録済み・データ不足は自動スキップ）。
+- `scripts/backtest_report.py`: スコア帯別実績レポートを出力（仕様書§12 Phase 6の完了条件）。
+
+**§10.2の物理的分離を自動テストで担保**: `tests/test_backtest_separation.py`が、`classification`/`scoring`/`collectors`/`db`配下のソースコードが`outcome_tracking`という文字列を一切含まないことを機械的に検証（仕様書が求める「コードレビュー時のチェック項目」を自動化）。
+
+**重要な制約**: 現在収集済みの実データは4銘柄とも`dataset_tag='case_study'`のみで、`'statistical'`データは1件も存在しません。そのため`backtest_report.py`を今実行しても**空のレポートになるのが正しい動作**です（仕様書§10.3が要求する分離が働いている証拠）。統計的に意味のあるレポートを得るには、Phase 7（実運用）で`'statistical'`銘柄群のデータを継続的に収集していく必要があります。動作確認は、モックデータに`--include-case-study-for-debugging-only`を付けて行いました（結果は統計的結論には使えません）。
+
+```bash
+python3 scripts/record_outcomes.py --db-path data/stock_radar.db3
+python3 scripts/backtest_report.py --db-path data/stock_radar.db3
+```
+
+### Phase 7（実運用）
+
+- `src/stock_radar/pipeline/runner.py`: 収集（TDnetの`fetch_recent()`で**全銘柄**を対象、4銘柄限定だったPhase 2の一括取得スクリプトとは異なる）→ 新規銘柄の株価取得 → 未分類の開示のみ分類 → 未スコアの開示のみスコアリング → S/A通知 → 未記録のoutcome記録、という日次パイプライン全体を1回実行する。各ステージは独立した例外処理を持ち、**1ステージの失敗が他のステージやプロセス全体をクラッシュさせない**設計（仕様書§12 Phase 7「エラー監視」）。
+- `src/stock_radar/pipeline/logging_config.py`: ログをコンソールとローテーションするログファイル（`logs/stock_radar.log`）の両方に出力。cron等のスケジューラは標準出力を捨てることが多いため、ファイルへの記録が必須。
+- `scripts/run_pipeline.py`: 1日1回、OS側のスケジューラ（後述）から呼び出すエントリポイント。失敗時は終了コード1を返し、`--alert-on-error`で失敗自体を通知（デスクトップ/メール）で知らせることも可能。
+
+**このPhaseの実装中に見つけた重要な修正（本番投入前に直せてよかったもの）**:
+1. **`score_disclosures.py`のクラッシュ**: Phase 6でoutcome_trackingへの記録を始めた後にPhase 4のスクリプトを再実行すると、外部キー制約違反でクラッシュする不具合を発見・修正。一度結果が記録された（＝バックテストの実績として確定した）スコアは、以後上書きしない設計に変更（`backtest.repository.delete_rescoreable_scores_for_weight_set`）。
+2. **TDnetのネットワーク障害でクラッシュ**: `TDnetClient`がJSONパースエラーだけを例外として捕捉しており、接続エラー・タイムアウト・プロキシエラー等が生の例外のまま伝播してパイプライン全体を止めてしまう不具合を発見・修正（このサンドボックス環境でのネットワーク遮断を利用して実際に再現・確認済み）。
+3. **開示の重複投入防止**: 日次実行では`fetch_recent()`の取得範囲が前回と重複するため、`(ticker, title, disclosed_at)`をキーに既存判定を行うガードを追加。
+4. **分類・スコアリングの差分実行化**: Phase 3/4のスクリプトは「毎回全件再処理」だったが、日次自動実行でこれをやるとバックテスト確定済みの記録を壊しかねないため、Phase 7のパイプラインでは「未処理のものだけ」処理する設計に変更（辞書修正後の全件再処理は引き続き手動でPhase 3/4のスクリプトを使う）。
+
+**スケジューラ設定（Mac: launchd or cron）**:
+
+cronの場合（`crontab -e`で編集、平日16:00 JSTに実行する例）:
+```
+0 16 * * 1-5 cd /path/to/stock_radar && /path/to/venv/bin/python3 scripts/run_pipeline.py --db-path data/stock_radar.db3 --method desktop --alert-on-error >> logs/cron.log 2>&1
+```
+
+**要実施**: 実際にスケジューラへ登録し、数営業日にわたって正常に動作する（クラッシュしない）ことを確認してください（仕様書§12 Phase 7の完了条件）。`logs/stock_radar.log`でエラーが出ていないか、`data/stock_radar.db3`の`disclosures`/`scores`が日々増えているかを確認する運用になります。この確認には実際の日数経過が必要なため、このセッション内では完了できません。
+
+```bash
+# 手動での動作確認（実際のTDnet/yfinanceへの接続が必要）
+python3 scripts/run_pipeline.py --db-path data/stock_radar.db3 --method desktop
+```
+
+**実運用で確認・修正済み**: ローカルのcronで実際に数日運用し、以下を発見・修正した。
+1. `score_disclosures.py`がoutcome記録済みスコアを削除しようとして外部キー制約違反でクラッシュする不具合
+2. TDnetのネットワーク障害（プロキシエラー等）でパイプライン全体がクラッシュする不具合
+3. JPXの新形式英数字ティッカーコード（例: `149A0`→正しくは`149A`）の変換ミスにより、該当銘柄の株価が取得できない不具合
+
+いずれも実際の自動実行で発見し、修正・再確認済み。
+
+#### Gmail通知（→iPhoneのメールアプリでプッシュ通知）
+
+デスクトップ通知はMacBookがオンラインの時しか届かないため、Gmail経由の通知も設定できる。SMTP認証情報は**絶対にコード/Gitに含めず**、環境変数から読み込む（`notification/email_notifier.py`参照）。
+
+ローカルでcronから使う場合、`.env.sh`（Git管理外、`.gitignore`済み）に環境変数を書き、crontabで`source`してから実行する:
+```
+0 16 * * 1-5 cd /path/to/stock_radar && . .env.sh && /path/to/.venv/bin/python3 scripts/run_pipeline.py --db-path data/stock_radar.db3 --method both --alert-on-error >> logs/cron.log 2>&1
+```
+
+#### GitHub Actionsでの実行（MacBookがオフラインでも動く）
+
+`.github/workflows/daily_pipeline.yml`で、平日16:00 JST（07:00 UTC）にGitHub側のサーバーで自動実行するよう設定済み。MacBookの起動状態に依存しない。
+
+**セットアップ**（GitHubのリポジトリ設定画面で、以下5つのSecretsを追加）:
+- リポジトリの **Settings → Secrets and variables → Actions → New repository secret** から追加
+- `STOCK_RADAR_SMTP_HOST` = `smtp.gmail.com`
+- `STOCK_RADAR_SMTP_PORT` = `587`
+- `STOCK_RADAR_SMTP_USER` = Gmailアドレス
+- `STOCK_RADAR_SMTP_PASSWORD` = Gmailアプリパスワード（16文字、スペースなし）
+- `STOCK_RADAR_NOTIFY_EMAIL_TO` = 通知を受け取りたいメールアドレス
+
+DB（開示・スコア・outcome履歴）はGit管理せず、GitHub Actionsの**キャッシュ機能**で実行間を引き継ぐ（`actions/cache`、run_idベースのキー＋prefix復元）。長期間（7日以上）実行がない、またはリポジトリ全体のキャッシュ容量上限に達すると、GitHubにより削除される可能性がある — その場合はデータがリセットされ、ゼロから再構築される（許容範囲と判断）。
+
+**重要**: ローカルのcronとGitHub Actionsを**両方同時に動かすと、DBが別々に育ち、同じ開示に対して二重に通知が届く**。GitHub Actionsに移行する場合は、ローカルのcrontabを止めることを推奨:
+```bash
+crontab -r
+```
+（`crontab -l`で内容を確認してから削除するのが安全）
+
+### セットアップ
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+### テスト実行
+
+```bash
+python3 -m pytest
+```
+
+### モックデータ入りDBの作成
+
+```bash
+python3 scripts/seed_mock_data.py --db-path data/stock_radar_mock.db3
+```
