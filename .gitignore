@@ -5,3 +5,5 @@ __pycache__/
 data/*.db3
 data/*.db
 .venv/
+.env.sh
+logs/
