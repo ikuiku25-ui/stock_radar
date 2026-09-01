@@ -56,3 +56,11 @@ jobs:
           name: stock-radar-logs-${{ github.run_id }}
           path: logs/
           retention-days: 30
+
+      - name: Upload database snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-radar-db-${{ github.run_id }}
+          path: data/stock_radar.db3
+          retention-days: 30
