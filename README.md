@@ -159,6 +159,42 @@ cronの場合（`crontab -e`で編集、平日16:00 JSTに実行する例）:
 python3 scripts/run_pipeline.py --db-path data/stock_radar.db3 --method desktop
 ```
 
+**実運用で確認・修正済み**: ローカルのcronで実際に数日運用し、以下を発見・修正した。
+1. `score_disclosures.py`がoutcome記録済みスコアを削除しようとして外部キー制約違反でクラッシュする不具合
+2. TDnetのネットワーク障害（プロキシエラー等）でパイプライン全体がクラッシュする不具合
+3. JPXの新形式英数字ティッカーコード（例: `149A0`→正しくは`149A`）の変換ミスにより、該当銘柄の株価が取得できない不具合
+
+いずれも実際の自動実行で発見し、修正・再確認済み。
+
+#### Gmail通知（→iPhoneのメールアプリでプッシュ通知）
+
+デスクトップ通知はMacBookがオンラインの時しか届かないため、Gmail経由の通知も設定できる。SMTP認証情報は**絶対にコード/Gitに含めず**、環境変数から読み込む（`notification/email_notifier.py`参照）。
+
+ローカルでcronから使う場合、`.env.sh`（Git管理外、`.gitignore`済み）に環境変数を書き、crontabで`source`してから実行する:
+```
+0 16 * * 1-5 cd /path/to/stock_radar && . .env.sh && /path/to/.venv/bin/python3 scripts/run_pipeline.py --db-path data/stock_radar.db3 --method both --alert-on-error >> logs/cron.log 2>&1
+```
+
+#### GitHub Actionsでの実行（MacBookがオフラインでも動く）
+
+`.github/workflows/daily_pipeline.yml`で、平日16:00 JST（07:00 UTC）にGitHub側のサーバーで自動実行するよう設定済み。MacBookの起動状態に依存しない。
+
+**セットアップ**（GitHubのリポジトリ設定画面で、以下5つのSecretsを追加）:
+- リポジトリの **Settings → Secrets and variables → Actions → New repository secret** から追加
+- `STOCK_RADAR_SMTP_HOST` = `smtp.gmail.com`
+- `STOCK_RADAR_SMTP_PORT` = `587`
+- `STOCK_RADAR_SMTP_USER` = Gmailアドレス
+- `STOCK_RADAR_SMTP_PASSWORD` = Gmailアプリパスワード（16文字、スペースなし）
+- `STOCK_RADAR_NOTIFY_EMAIL_TO` = 通知を受け取りたいメールアドレス
+
+DB（開示・スコア・outcome履歴）はGit管理せず、GitHub Actionsの**キャッシュ機能**で実行間を引き継ぐ（`actions/cache`、run_idベースのキー＋prefix復元）。長期間（7日以上）実行がない、またはリポジトリ全体のキャッシュ容量上限に達すると、GitHubにより削除される可能性がある — その場合はデータがリセットされ、ゼロから再構築される（許容範囲と判断）。
+
+**重要**: ローカルのcronとGitHub Actionsを**両方同時に動かすと、DBが別々に育ち、同じ開示に対して二重に通知が届く**。GitHub Actionsに移行する場合は、ローカルのcrontabを止めることを推奨:
+```bash
+crontab -r
+```
+（`crontab -l`で内容を確認してから削除するのが安全）
+
 ### セットアップ
 
 ```bash

@@ -26,3 +26,28 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.executescript(schema_sql)
     conn.commit()
     return conn
+
+
+def get_or_init_connection(db_path: str) -> sqlite3.Connection:
+    """Open db_path, creating the schema first if it isn't there yet.
+
+    For callers (the Phase 7 pipeline, in particular) that may point at a
+    brand-new path with no prior data — e.g. a GitHub Actions runner's
+    first-ever run, before any cache of the DB exists. Safe to call
+    repeatedly: if the schema is already present, this is equivalent to
+    get_connection() (schema.sql's CREATE TABLE statements have no
+    IF NOT EXISTS, so re-running init_db() against an already-initialized
+    DB would raise "table already exists").
+    """
+    conn = get_connection(db_path)
+    has_schema = (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'companies'"
+        ).fetchone()
+        is not None
+    )
+    if not has_schema:
+        schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
+        conn.executescript(schema_sql)
+        conn.commit()
+    return conn

@@ -1,0 +1,58 @@
+name: Daily Stock Radar Pipeline
+
+# spec §12 Phase 7: 定期実行. Runs on GitHub's own servers so the pipeline
+# fires even when the user's Mac is offline/asleep — unlike the local cron
+# setup, this doesn't depend on any particular machine being on.
+#
+# The database has no permanent home in this repo (see README's Phase 7
+# section for why: a growing SQLite binary committed on every run would
+# bloat Git history). Instead it round-trips through actions/cache, keyed
+# by run id with a prefix restore-key, which is the standard pattern for
+# "mutable" cache content (cache entries are otherwise immutable once
+# written). This means the DB can be evicted by GitHub's cache eviction
+# (unused for 7+ days, or the repo's overall 10GB cache cap) — acceptable
+# for this personal-scale tool, but worth knowing before relying on long
+# multi-month history surviving indefinitely.
+on:
+  schedule:
+    - cron: "0 7 * * 1-5" # 16:00 JST on weekdays (07:00 UTC) — spec's post-close target
+  workflow_dispatch: {} # allows manual "Run workflow" from the Actions tab for testing
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore database from cache
+        uses: actions/cache@v4
+        with:
+          path: data/stock_radar.db3
+          key: stock-radar-db-${{ github.run_id }}
+          restore-keys: |
+            stock-radar-db-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily pipeline
+        env:
+          STOCK_RADAR_SMTP_HOST: ${{ secrets.STOCK_RADAR_SMTP_HOST }}
+          STOCK_RADAR_SMTP_PORT: ${{ secrets.STOCK_RADAR_SMTP_PORT }}
+          STOCK_RADAR_SMTP_USER: ${{ secrets.STOCK_RADAR_SMTP_USER }}
+          STOCK_RADAR_SMTP_PASSWORD: ${{ secrets.STOCK_RADAR_SMTP_PASSWORD }}
+          STOCK_RADAR_NOTIFY_EMAIL_TO: ${{ secrets.STOCK_RADAR_NOTIFY_EMAIL_TO }}
+        run: |
+          python scripts/run_pipeline.py --db-path data/stock_radar.db3 --method email --alert-on-error
+
+      - name: Upload run logs
+        if: always() # keep logs even when the pipeline step above failed
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-radar-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 30

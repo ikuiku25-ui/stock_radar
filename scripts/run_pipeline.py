@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from stock_radar.db.connection import get_connection  # noqa: E402
+from stock_radar.db.connection import get_or_init_connection  # noqa: E402
 from stock_radar.notification.desktop import send_desktop_notification  # noqa: E402
 from stock_radar.notification.email_notifier import send_email_notification  # noqa: E402
 from stock_radar.pipeline.logging_config import configure_logging  # noqa: E402
@@ -62,7 +62,8 @@ def main() -> None:
     if args.method in ("email", "both"):
         notifiers.append(send_email_notification)
 
-    conn = get_connection(args.db_path)
+    Path(args.db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = get_or_init_connection(args.db_path)
     summary = run_daily_pipeline(conn, notifiers=notifiers, tdnet_limit=args.tdnet_limit, price_period=args.price_period)
     conn.close()
 
